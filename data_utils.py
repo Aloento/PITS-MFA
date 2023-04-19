@@ -5,16 +5,13 @@ import random
 import torch
 import torch.utils.data
 
-import commons
 from analysis import Pitch
 from mel_processing import spectrogram_torch
-from text import text_to_sequence
+from text import cleaned_text_to_sequence
 from utils import load_wav_to_torch, load_filepaths_and_text
 
-""" Modified from Multi speaker version of VITS"""
 
-
-class TextAudioSpeakerLoader(torch.utils.data.Dataset):
+class TextAudioLoader(torch.utils.data.Dataset):
   """
       1) loads audio, speaker_id, text pairs
       2) normalizes text and converts them to sequences of integers
@@ -35,10 +32,6 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
     self.min_text_len = getattr(hparams, "min_text_len", 1)
     self.max_text_len = getattr(hparams, "max_text_len", 190)
 
-    self.speaker_dict = {
-      speaker: idx
-      for idx, speaker in enumerate(hparams.speakers)
-    }
     self.data_path = hparams.data_path
 
     self.pitch = Pitch(sr=hparams.sampling_rate,
@@ -53,8 +46,8 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
     self._filter()
     if pt_run:
       for _audiopaths_sid_text in self.audiopaths_sid_text:
-        _ = self.get_audio_text_speaker_pair(_audiopaths_sid_text,
-                                             True)
+        _ = self.get_audio_text_pair(_audiopaths_sid_text,
+                                     True)
 
   def _filter(self):
     """
@@ -66,23 +59,40 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
 
     audiopaths_sid_text_new = []
     lengths = []
-    for audiopath, text, spk in self.audiopaths_sid_text:
-      if self.min_text_len <= len(text) <= self.max_text_len:
-        audiopath = os.path.join(self.data_path, audiopath)
-        audiopaths_sid_text_new.append([audiopath, text, spk])
-        lengths.append(
-          os.path.getsize(audiopath) // (2 * self.hop_length))
+    for id_, phonemes, durations in self.audiopaths_sid_text:
+      if self.min_text_len <= len(phonemes) <= self.max_text_len:
+        wav_path = os.path.join(self.data_path, id_)
+        audiopaths_sid_text_new.append([wav_path, phonemes, durations])
+        lengths.append(os.path.getsize(wav_path) // (2 * self.hop_length))
+
     self.audiopaths_sid_text = audiopaths_sid_text_new
     self.lengths = lengths
 
-  def get_audio_text_speaker_pair(self, audiopath_sid_text, pt_run=False):
-    # separate filename, speaker_id and text
-    audiopath, text, spk = audiopath_sid_text[0], audiopath_sid_text[
-      1], audiopath_sid_text[2]
-    text, tone = self.get_text(text)
-    spec, ying, wav = self.get_audio(audiopath, pt_run)
-    sid = self.get_sid(self.speaker_dict[spk])
-    return text, spec, ying, wav, sid, tone
+  def get_audio_text_pair(self, audiopath_and_text, pt_run=False):
+    wav_path, phonemes, durations = audiopath_and_text
+    phonemes = self.get_phonemes(phonemes)
+    phn_dur = self.get_duration_flag(durations)
+
+    spec, ying, wav = self.get_audio(wav_path, pt_run)
+
+    sumdur = sum(phn_dur)
+    assert abs(spec.shape[-1] - sumdur) < 2, wav_path
+
+    if spec.shape[-1] > sumdur:
+      spec = spec[:, :sumdur]
+      wav = wav[:, :sumdur * self.hop_length]
+    elif spec.shape[-1] < sumdur:
+      spec_pad = torch.zeros([spec.shape[0], sumdur])
+      wav_pad = torch.zeros([1, sumdur * self.hop_length])
+      spec_pad[:, :spec.shape[-1]] = spec
+      wav_pad[:, :wav.shape[-1]] = wav
+      spec = spec_pad
+      wav = wav_pad
+
+    assert phonemes.shape == phn_dur.shape, wav_path
+    assert sumdur == wav.shape[-1] // self.hop_length
+
+    return phonemes, spec, ying, wav, phn_dur
 
   def get_audio(self, filename, pt_run=False):
     audio, sampling_rate = load_wav_to_torch(filename)
@@ -116,28 +126,25 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
       torch.save(ying, ying_filename)
     return spec, ying, audio_norm
 
-  def get_text(self, text):
-    text_norm, tone = text_to_sequence(text, self.lang)
-    if self.add_blank:
-      text_norm = commons.intersperse(text_norm, 0)
-      tone = commons.intersperse(tone, 0)
+  def get_phonemes(self, phonemes):
+    text_norm = cleaned_text_to_sequence(phonemes.split(" "))
     text_norm = torch.LongTensor(text_norm)
-    tone = torch.LongTensor(tone)
-    return text_norm, tone
+    return text_norm
 
-  def get_sid(self, sid):
-    sid = torch.LongTensor([int(sid)])
-    return sid
+  def get_duration_flag(self, phn_dur):
+    phn_dur = [int(i) for i in phn_dur.split(" ")]
+    phn_dur = torch.LongTensor(phn_dur)
+    return phn_dur
 
   def __getitem__(self, index):
-    return self.get_audio_text_speaker_pair(
+    return self.get_audio_text_pair(
       self.audiopaths_sid_text[index])
 
   def __len__(self):
     return len(self.audiopaths_sid_text)
 
 
-class TextAudioSpeakerCollate():
+class TextAudioCollate:
   """ Zero-pads model inputs and targets"""
 
   def __init__(self, return_ids=False):

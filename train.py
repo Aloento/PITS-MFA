@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 import commons
 import utils
-from data_utils import (TextAudioSpeakerLoader, TextAudioSpeakerCollate,
+from data_utils import (TextAudioLoader, TextAudioCollate,
                         DistributedBucketSampler, create_spec)
 from losses import (generator_loss, discriminator_loss, feature_loss, kl_loss)
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
@@ -72,13 +72,13 @@ def run(rank, n_gpus, hps, args):
 
   use_persistent_workers = hps.data.persistent_workers
   use_pin_memory = not use_persistent_workers
-  train_dataset = TextAudioSpeakerLoader(hps.data.training_files, hps.data,
-                                         rank == 0 and args.initial_run)
-  collate_fn = TextAudioSpeakerCollate()
+  train_dataset = TextAudioLoader(hps.data.training_files, hps.data,
+                                  rank == 0 and args.initial_run)
+  collate_fn = TextAudioCollate()
   if rank == 0:
-    eval_dataset = TextAudioSpeakerLoader(hps.data.validation_files,
-                                          hps.data, rank == 0
-                                          and args.initial_run)
+    eval_dataset = TextAudioLoader(hps.data.validation_files,
+                                   hps.data, rank == 0
+                                   and args.initial_run)
     eval_loader = DataLoader(
       eval_dataset,
       num_workers=8,

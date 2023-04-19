@@ -3,7 +3,7 @@
 import math
 
 import torch
-from torch import nn
+from torch import nn, Tensor
 from torch.nn import Conv1d, ConvTranspose1d, Conv2d
 from torch.nn import functional as F
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
@@ -940,35 +940,6 @@ class YingDecoder(nn.Module):
     return yin_gt_crop, yin_gt_shifted_crop, yin_hat_crop, z_yin_crop, scope_shift
 
 
-# For Q option
-# class VQEmbedding(nn.Module):
-#
-#    def __init__(self, codebook_size,
-#                 code_channels):
-#        super().__init__()
-#        self.embedding = nn.Embedding(codebook_size, code_channels)
-#        self.embedding.weight.data.uniform_(-1. / codebook_size,
-#                                            1. / codebook_size)
-#
-#    def forward(self, z_e_x):
-#        z_e_x_ = z_e_x.permute(0, 2, 1).contiguous()
-#        latent_indices = vq(z_e_x_, self.embedding.weight)
-#        z_q = self.embedding(latent_indices).permute(0, 2, 1)
-#        return z_q
-#
-#    def straight_through(self, z_e_x):
-#        z_e_x_ = z_e_x.permute(0, 2, 1).contiguous()
-#        z_q_x_st_, indices = vq_st(z_e_x_, self.embedding.weight.detach())
-#        z_q_x_st = z_q_x_st_.permute(0, 2, 1).contiguous()
-#
-#        z_q_x_flatten = torch.index_select(self.embedding.weight,
-#                                           dim=0,
-#                                           index=indices)
-#        z_q_x_ = z_q_x_flatten.view_as(z_e_x_)
-#        z_q_x = z_q_x_.permute(0, 2, 1).contiguous()
-#        return z_q_x_st, z_q_x
-
-
 class SynthesizerTrn(nn.Module):
   """
   Synthesizer for Training
@@ -1002,7 +973,6 @@ class SynthesizerTrn(nn.Module):
       n_speakers=0,
       gin_channels=0,
       use_sdp=True,
-      # codebook_size=256, #for Q option
       **kwargs):
 
     super().__init__()
@@ -1087,30 +1057,27 @@ class SynthesizerTrn(nn.Module):
       gin_channels=gin_channels
     )
 
-    # self.vq = VQEmbedding(codebook_size, inter_channels - yin_channels)#inter_channels // 2)
     self.emb_g = nn.Embedding(self.n_speakers, gin_channels)
 
-    self.pitch = Pitch(midi_start=midi_start,
-                       midi_end=midi_end,
-                       octave_range=octave_range)
+    self.pitch = Pitch(
+      midi_start=midi_start,
+      midi_end=midi_end,
+      octave_range=octave_range
+    )
 
-  def crop_scope(
-      self,
-      x,
-      scope_shift=0):  # x: list #need to modify for non-scalar shift
+  def crop_scope(self, x: list, scope_shift=0):  # TODO: need to modify for non-scalar shift
     return [
-      i[:, self.yin_start + scope_shift:self.yin_start + self.yin_scope +
-                                        scope_shift, :] for i in x
+      i[:, self.yin_start + scope_shift:self.yin_start + self.yin_scope + scope_shift, :] for i in x
     ]
 
   def crop_scope_tensor(
-      self, x,
-      scope_shift):  # x: tensor [B,C,T] #scope_shift: tensor [B]
+      self, x: Tensor,  # x: [B,C,T]
+      scope_shift: Tensor  # scope_shift: tensor [B]
+  ):
     return torch.stack([
-      x[i, self.yin_start + scope_shift[i]:self.yin_start +
-                                           self.yin_scope + scope_shift[i], :] for i in range(x.shape[0])
-    ],
-      dim=0)
+      x[i, self.yin_start + scope_shift[i]:self.yin_start + self.yin_scope + scope_shift[i], :] for i in
+      range(x.shape[0])
+    ], dim=0)
 
   def yin_dec_infer(self, z_yin, z_mask, sid=None):
     if self.n_speakers > 0:
@@ -1119,16 +1086,7 @@ class SynthesizerTrn(nn.Module):
       g = None
     return self.yin_dec.infer(z_yin, z_mask, g)
 
-  def forward(self,
-              x,
-              t,
-              x_lengths,
-              y,
-              y_lengths,
-              ying,
-              ying_lengths,
-              sid=None,
-              scope_shift=0):
+  def forward(self, x, t, x_lengths, y, y_lengths, ying, ying_lengths, sid=None, scope_shift=0):
     x, m_p, logs_p, x_mask = self.text_encoder(x, t, x_lengths)
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
@@ -1136,11 +1094,6 @@ class SynthesizerTrn(nn.Module):
       g = None
 
     z_spec, m_spec, logs_spec, spec_mask = self.posterior_encoder(y, y_lengths, g=g)
-
-    # for Q option
-    # z_spec_q_st, z_spec_q = self.vq.straight_through(z_spec)
-    # z_spec_q_st = z_spec_q_st * spec_mask
-    # z_spec_q = z_spec_q * spec_mask
 
     z_yin, m_yin, logs_yin, yin_mask = self.pitch_encoder(ying, y_lengths, g=g)
     z_yin_crop, logs_yin_crop, m_yin_crop = self.crop_scope(
@@ -1166,21 +1119,15 @@ class SynthesizerTrn(nn.Module):
       # negative cross-entropy
       s_p_sq_r = torch.exp(-2 * logs_p)  # [b, d, t]
       # [b, 1, t_s]
-      neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - logs_p, [1],
-                            keepdim=True)
-      # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s], z_p: [b,d,t]
-      # neg_cent2 = torch.matmul(-0.5 * (z_p**2).transpose(1, 2), s_p_sq_r)
-      neg_cent2 = torch.einsum('bdt, bds -> bts', -0.5 * (z_p ** 2),
-                               s_p_sq_r)
-      # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
-      # neg_cent3 = torch.matmul(z_p.transpose(1, 2), (m_p * s_p_sq_r))
+      neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - logs_p, [1], keepdim=True)
+
+      neg_cent2 = torch.einsum('bdt, bds -> bts', -0.5 * (z_p ** 2), s_p_sq_r)
+
       neg_cent3 = torch.einsum('bdt, bds -> bts', z_p, (m_p * s_p_sq_r))
-      neg_cent4 = torch.sum(-0.5 * (m_p ** 2) * s_p_sq_r, [1],
-                            keepdim=True)  # [b, 1, t_s]
+      neg_cent4 = torch.sum(-0.5 * (m_p ** 2) * s_p_sq_r, [1], keepdim=True)  # [b, 1, t_s]
       neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
 
-      attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(
-        y_mask, -1)
+      attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
       from monotonic_align import maximum_path
       attn = maximum_path(neg_cent,
                           attn_mask.squeeze(1)).unsqueeze(1).detach()
