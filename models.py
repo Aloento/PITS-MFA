@@ -1103,7 +1103,7 @@ class SynthesizerTrn(nn.Module):
       attn = maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
 
     logw_ = torch.log(phndur.detach().float() + 1).unsqueeze(1) * x_mask
-    logw = self.duration_predictor(x, x_mask, g=g)
+    logw = self.dp(x, x_mask, g=g)
     l_loss = torch.sum((logw - logw_) ** 2, [1, 2])
     x_mask_sum = torch.sum(x_mask)
     l_length = l_loss / x_mask_sum
