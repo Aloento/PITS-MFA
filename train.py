@@ -4,12 +4,9 @@ import math
 import os
 
 import torch
-import torch.distributed as dist
-import torch.multiprocessing as mp
 from phaseaug.phaseaug import PhaseAug
 from torch.cuda.amp import autocast, GradScaler
 from torch.nn import functional as F
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -17,7 +14,7 @@ from tqdm import tqdm
 import commons
 import utils
 from data_utils import (TextAudioLoader, TextAudioCollate,
-                        DistributedBucketSampler, create_spec)
+                        create_spec)
 from losses import (generator_loss, discriminator_loss, feature_loss, kl_loss)
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from models import (
@@ -107,8 +104,6 @@ def run(n_gpus, hps, args):
                               hps.train.learning_rate,
                               betas=hps.train.betas,
                               eps=hps.train.eps)
-  net_g = DDP(net_g, find_unused_parameters=True)
-  net_d = DDP(net_d, find_unused_parameters=True)
 
   if args.transfer:
     _, _, _, _, _, _, _ = utils.load_checkpoint(args.transfer, 0, net_g,
@@ -181,7 +176,7 @@ def train_and_evaluate(epoch, hps, nets, optims, schedulers, scaler,
                   wav, wav_lengths,
                   phndur) in enumerate(train_loader):
 
-    phonemes, phonemes_lengths = phonemes.cuda(non_blocking=True), phonemes_lengths.cuda( non_blocking=True)
+    phonemes, phonemes_lengths = phonemes.cuda(non_blocking=True), phonemes_lengths.cuda(non_blocking=True)
     spec, spec_lengths = spec.cuda(non_blocking=True), spec_lengths.cuda(non_blocking=True)
     ying, ying_lengths = ying.cuda(non_blocking=True), ying_lengths.cuda(non_blocking=True)
 
