@@ -13,6 +13,7 @@ import commons
 import modules
 from analysis import Pitch
 from commons import init_weights, get_padding
+from monotonic_align import maximum_path
 from pqmf import PQMF
 
 
@@ -198,11 +199,8 @@ class TextEncoder(nn.Module):
                                       p_dropout)
     self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-  def forward(self, x, t, x_lengths):
-    t_zero = (t == 0)
-    emb_t = self.emb_t(t)
-    emb_t[t_zero, :] = 0
-    x = (self.emb(x) + emb_t) * math.sqrt(
+  def forward(self, x, x_lengths):
+    x = self.emb(x) * math.sqrt(
       self.hidden_channels)  # [b, t, h]
     # x = torch.transpose(x, 1, -1)  # [b, h, t]
     x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(1)),
@@ -474,34 +472,6 @@ class DiscriminatorS(nn.Module):
     x = torch.flatten(x, 1, -1)
 
     return x, fmap
-
-
-class MultiPeriodDiscriminator(nn.Module):
-
-  def __init__(self, use_spectral_norm=False):
-    super(MultiPeriodDiscriminator, self).__init__()
-    periods = [2, 3, 5, 7, 11]
-
-    discs = [DiscriminatorS(use_spectral_norm=use_spectral_norm)]
-    discs = discs + \
-            [DiscriminatorP(i, use_spectral_norm=use_spectral_norm)
-             for i in periods]
-    self.discriminators = nn.ModuleList(discs)
-
-  def forward(self, y, y_hat):
-    y_d_rs = []
-    y_d_gs = []
-    fmap_rs = []
-    fmap_gs = []
-    for i, d in enumerate(self.discriminators):
-      y_d_r, fmap_r = d(y)
-      y_d_g, fmap_g = d(y_hat)
-      y_d_rs.append(y_d_r)
-      y_d_gs.append(y_d_g)
-      fmap_rs.append(fmap_r)
-      fmap_gs.append(fmap_g)
-
-    return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
 ##### Avocodo
@@ -1086,16 +1056,16 @@ class SynthesizerTrn(nn.Module):
       g = None
     return self.yin_dec.infer(z_yin, z_mask, g)
 
-  def forward(self, x, t, x_lengths, y, y_lengths, ying, ying_lengths, sid=None, scope_shift=0):
-    x, m_p, logs_p, x_mask = self.text_encoder(x, t, x_lengths)
+  def forward(self, phonemes, phonemes_lengths, spec, spec_lengths, ying, ying_lengths, phndur, sid=None, scope_shift=0):
+
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
     else:
       g = None
 
-    z_spec, m_spec, logs_spec, spec_mask = self.posterior_encoder(y, y_lengths, g=g)
+    z_spec, m_spec, logs_spec, spec_mask = self.posterior_encoder(spec, spec_lengths, g=g)
 
-    z_yin, m_yin, logs_yin, yin_mask = self.pitch_encoder(ying, y_lengths, g=g)
+    z_yin, m_yin, logs_yin, yin_mask = self.pitch_encoder(ying, spec_lengths, g=g)
     z_yin_crop, logs_yin_crop, m_yin_crop = self.crop_scope(
       [z_yin, logs_yin, m_yin], scope_shift)
 
@@ -1115,6 +1085,8 @@ class SynthesizerTrn(nn.Module):
     z_dec_shifted = torch.cat([z_spec.detach(), z_yin_crop_shifted], dim=1)
     z_dec_ = torch.cat([z_dec, z_dec_shifted], dim=0)
 
+    x, m_p, logs_p, x_mask = self.text_encoder(phonemes, phonemes_lengths)
+
     with torch.no_grad():
       # negative cross-entropy
       s_p_sq_r = torch.exp(-2 * logs_p)  # [b, d, t]
@@ -1128,19 +1100,13 @@ class SynthesizerTrn(nn.Module):
       neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
 
       attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-      from monotonic_align import maximum_path
-      attn = maximum_path(neg_cent,
-                          attn_mask.squeeze(1)).unsqueeze(1).detach()
+      attn = maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
 
-    w = attn.sum(2)
-    if self.use_sdp:
-      l_length = self.dp(x, x_mask, w, g=g)
-      l_length = l_length / torch.sum(x_mask)
-    else:
-      logw_ = torch.log(w + 1e-6) * x_mask
-      logw = self.dp(x, x_mask, g=g)
-      l_length = torch.sum(
-        (logw - logw_) ** 2, [1, 2]) / torch.sum(x_mask)  # for averaging
+    logw_ = torch.log(phndur.detach().float() + 1).unsqueeze(1) * x_mask
+    logw = self.duration_predictor(x, x_mask, g=g)
+    l_loss = torch.sum((logw - logw_) ** 2, [1, 2])
+    x_mask_sum = torch.sum(x_mask)
+    l_length = l_loss / x_mask_sum
 
     # expand prior
     m_p = torch.einsum('bctn, bdn -> bdt', attn, m_p)
@@ -1149,7 +1115,7 @@ class SynthesizerTrn(nn.Module):
     # z_slice, ids_slice = commons.rand_slice_segments(z_dec, y_lengths, self.segment_size)
     # o = self.dec(z_slice, g=g)
     z_slice, ids_slice = commons.rand_slice_segments_for_cat(
-      z_dec_, torch.cat([y_lengths, y_lengths], dim=0),
+      z_dec_, torch.cat([spec_lengths, spec_lengths], dim=0),
       self.segment_size)
     o_ = self.waveform_decoder.hier_forward(z_slice, g=torch.cat([g, g], dim=0))
     o = [torch.chunk(o_hier, 2, dim=0)[0] for o_hier in o_]
@@ -1169,7 +1135,6 @@ class SynthesizerTrn(nn.Module):
 
   def infer(self,
             x,
-            t,
             x_lengths,
             sid=None,
             noise_scale=1,
@@ -1183,14 +1148,8 @@ class SynthesizerTrn(nn.Module):
     else:
       g = None
 
-    if self.use_sdp:
-      logw = self.dp(x,
-                     x_mask,
-                     g=g,
-                     reverse=True,
-                     noise_scale=noise_scale_w)
-    else:
-      logw = self.dp(x, x_mask, g=g)
+    logw = self.dp(x, x_mask, g=g)
+
     w = torch.exp(logw) * x_mask * length_scale
     w_ceil = torch.ceil(w)
     y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
@@ -1214,7 +1173,6 @@ class SynthesizerTrn(nn.Module):
 
   def infer_pre_decoder(self,
                         x,
-                        t,
                         x_lengths,
                         sid=None,
                         noise_scale=1.,
@@ -1222,7 +1180,7 @@ class SynthesizerTrn(nn.Module):
                         noise_scale_w=1.,
                         max_len=None,
                         scope_shift=0):
-    x, m_p, logs_p, x_mask = self.text_encoder(x, t, x_lengths)
+    x, m_p, logs_p, x_mask = self.text_encoder(x, x_lengths)
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
     else:

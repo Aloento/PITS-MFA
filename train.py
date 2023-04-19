@@ -22,9 +22,8 @@ from losses import (generator_loss, discriminator_loss, feature_loss, kl_loss)
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from models import (
   SynthesizerTrn,
-  #    MultiPeriodDiscriminator,
   AvocodoDiscriminator)
-from text.symbols import symbol_len
+from text.symbols import symbols
 
 torch.backends.cudnn.benchmark = True
 global_step = 0
@@ -81,13 +80,11 @@ def run(rank, n_gpus, hps, args):
                                    and args.initial_run)
     eval_loader = DataLoader(
       eval_dataset,
-      num_workers=8,
+      num_workers=2,
       shuffle=False,
       batch_size=hps.train.batch_size,
-      pin_memory=use_pin_memory,
       drop_last=False,
       collate_fn=collate_fn,
-      persistent_workers=use_persistent_workers,
     )
   elif args.initial_run:
     print(f'rank: {rank} is waiting...')
@@ -96,22 +93,23 @@ def run(rank, n_gpus, hps, args):
     logger.info('Training Started')
   train_sampler = DistributedBucketSampler(
     train_dataset,
-    hps.train.batch_size, [32, 300, 400, 500, 600, 700, 800, 900, 1000],
+    hps.train.batch_size,
+    [32, 500, 600, 700, 800, 900, 1100, 1300, 1500],
     num_replicas=n_gpus,
     rank=rank,
     shuffle=True)
-  train_loader = DataLoader(train_dataset,
-                            num_workers=10,
-                            shuffle=False,
-                            pin_memory=use_pin_memory,
-                            collate_fn=collate_fn,
-                            persistent_workers=use_persistent_workers,
-                            batch_sampler=train_sampler)
+  train_loader = DataLoader(
+    train_dataset,
+    num_workers=8,
+    shuffle=False,
+    collate_fn=collate_fn,
+    batch_sampler=train_sampler,
+    persistent_workers=True
+  )
 
-  net_g = SynthesizerTrn(symbol_len(hps.data.languages),
+  net_g = SynthesizerTrn(len(symbols),
                          hps.data.filter_length // 2 + 1,
                          hps.train.segment_size // hps.data.hop_length,
-                         n_speakers=len(hps.data.speakers),
                          midi_start=hps.data.midi_start,
                          midi_end=hps.data.midi_end,
                          octave_range=hps.data.octave_range,
@@ -204,9 +202,13 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler,
                      position=1,
                      leave=False)
 
-  for batch_idx, (x, x_lengths, spec, spec_lengths, ying, ying_lengths, y,
-                  y_lengths, speakers, tone) in enumerate(train_loader):
-    x, x_lengths = x.cuda(rank, non_blocking=True), x_lengths.cuda(
+  for batch_idx, (phonemes, phonemes_lengths,
+                  spec, spec_lengths,
+                  ying, ying_lengths,
+                  wav, wav_lengths,
+                  phndur) in enumerate(train_loader):
+
+    phonemes, phonemes_lengths = phonemes.cuda(rank, non_blocking=True), phonemes_lengths.cuda(
       rank, non_blocking=True)
     spec, spec_lengths = spec.cuda(
       rank, non_blocking=True), spec_lengths.cuda(rank,
@@ -215,10 +217,10 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler,
       rank, non_blocking=True), ying_lengths.cuda(rank,
                                                   non_blocking=True)
 
-    y, y_lengths = y.cuda(rank, non_blocking=True), y_lengths.cuda(
+    wav, wav_lengths = wav.cuda(rank, non_blocking=True), wav_lengths.cuda(
       rank, non_blocking=True)
-    speakers = speakers.cuda(rank, non_blocking=True)
-    tone = tone.cuda(rank, non_blocking=True)
+
+    phndur = phndur.cuda(rank, non_blocking=True)
 
     with autocast(enabled=hps.train.fp16_run):
       y_hat, l_length, attn, ids_slice, x_mask, z_mask, y_hat_, \
@@ -226,8 +228,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler,
         (z_spec, m_spec, logs_spec, spec_mask, z_yin, m_yin, logs_yin, yin_mask), \
         (yin_gt_crop, yin_gt_shifted_crop, yin_dec_crop, yin_hat_crop, scope_shift, yin_hat_shifted) \
         = net_g(
-        x, tone, x_lengths, spec, spec_lengths, ying, ying_lengths, speakers
+        phonemes, phonemes_lengths, spec, spec_lengths, ying, ying_lengths, phndur
       )
+
       mel = spec_to_mel_torch(spec, hps.data.filter_length,
                               hps.data.n_mel_channels,
                               hps.data.sampling_rate, hps.data.mel_fmin,
@@ -243,7 +246,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler,
         torch.cat([yin_gt_crop, yin_gt_shifted_crop], dim=0),
         ids_slice, hps.train.segment_size // hps.data.hop_length)
 
-      y_ = commons.slice_segments(torch.cat([y, y], dim=0),
+      y_ = commons.slice_segments(torch.cat([wav, wav], dim=0),
                                   ids_slice * hps.data.hop_length,
                                   hps.train.segment_size)  # sliced
       # Discriminator
@@ -348,19 +351,22 @@ def evaluate(hps, current_step, epoch, generator, eval_loader, writer):
                    desc="Validation (Step {})".format(current_step),
                    position=1,
                    leave=False)
-    for batch_idx, (x, x_lengths, spec, spec_lengths, ying, ying_lengths,
-                    y, y_lengths, speakers,
-                    tone) in enumerate(eval_loader):
-      x, x_lengths = x.cuda(0, non_blocking=True), x_lengths.cuda(
+
+    for batch_idx, (phonemes, phonemes_lengths,
+                    spec, spec_lengths,
+                    ying, ying_lengths,
+                    wav, wav_lengths,
+                    phndur) in enumerate(eval_loader):
+
+      phonemes, phonemes_lengths = phonemes.cuda(0, non_blocking=True), phonemes_lengths.cuda(
         0, non_blocking=True)
       spec, spec_lengths = spec.cuda(
         0, non_blocking=True), spec_lengths.cuda(0, non_blocking=True)
       ying, ying_lengths = ying.cuda(
         0, non_blocking=True), ying_lengths.cuda(0, non_blocking=True)
-      y, y_lengths = y.cuda(0, non_blocking=True), y_lengths.cuda(
+      wav, wav_lengths = wav.cuda(0, non_blocking=True), wav_lengths.cuda(
         0, non_blocking=True)
-      speakers = speakers.cuda(0, non_blocking=True)
-      tone = tone.cuda(0, non_blocking=True)
+      phndur = phndur.cuda(0, non_blocking=True)
 
       with autocast(enabled=hps.train.fp16_run):
         y_hat, l_length, attn, ids_slice, x_mask, z_mask, y_hat_, \
@@ -369,7 +375,7 @@ def evaluate(hps, current_step, epoch, generator, eval_loader, writer):
           (z_spec, m_spec, logs_spec, spec_mask, z_yin, m_yin, logs_yin, yin_mask), \
           (yin_gt_crop, yin_gt_shifted_crop, yin_dec_crop, yin_hat_crop, scope_shift, yin_hat_shifted) \
           = generator.module(
-          x, tone, x_lengths, spec, spec_lengths, ying, ying_lengths, speakers
+          phonemes, phonemes_lengths, spec, spec_lengths, ying, ying_lengths, phndur
         )
 
         mel = spec_to_mel_torch(spec, hps.data.filter_length,
@@ -392,21 +398,18 @@ def evaluate(hps, current_step, epoch, generator, eval_loader, writer):
           loss_val_yin += loss_yin.item()
 
       if batch_idx == 0:
-        x = x[:n_sample]
-        x_lengths = x_lengths[:n_sample]
+        phonemes = phonemes[:n_sample]
+        phonemes_lengths = phonemes_lengths[:n_sample]
         spec = spec[:n_sample]
         spec_lengths = spec_lengths[:n_sample]
         ying = ying[:n_sample]
         ying_lengths = ying_lengths[:n_sample]
-        y = y[:n_sample]
-        y_lengths = y_lengths[:n_sample]
-        speakers = speakers[:n_sample]
-        tone = tone[:1]
+        wav = wav[:n_sample]
+        wav_lengths = wav_lengths[:n_sample]
 
         decoder_inputs, _, mask, (z_crop, z, *_) \
-          = generator.module.infer_pre_decoder(x, tone, x_lengths, speakers, max_len=2000)
-        y_hat = generator.module.infer_decode_chunk(
-          decoder_inputs, speakers)
+          = generator.module.infer_pre_decoder(phonemes, phonemes_lengths, max_len=2000)
+        y_hat = generator.module.infer_decode_chunk(decoder_inputs)
 
         # scope-shifted
         z_spec, z_yin = torch.split(z,
@@ -416,10 +419,9 @@ def evaluate(hps, current_step, epoch, generator, eval_loader, writer):
         z_yin_crop = generator.module.crop_scope([z_yin], 6)[0]
         z_crop_shift = torch.cat([z_spec, z_yin_crop], dim=1)
         decoder_inputs_shift = z_crop_shift * mask
-        y_hat_shift = generator.module.infer_decode_chunk(
-          decoder_inputs_shift, speakers)
+        y_hat_shift = generator.module.infer_decode_chunk(decoder_inputs_shift)
         z_yin = z_yin * mask
-        yin_hat = generator.module.yin_dec_infer(z_yin, mask, speakers)
+        yin_hat = generator.module.yin_dec_infer(z_yin, mask)
 
         y_hat_mel_length = mask.sum([1, 2]).long()
         y_hat_lengths = y_hat_mel_length * hps.data.hop_length
@@ -541,7 +543,7 @@ def evaluate(hps, current_step, epoch, generator, eval_loader, writer):
                   ying[i].cpu().numpy())
             })
             audio_dict.update(
-              {"gt/{}_audio".format(i): y[i, :, :y_lengths[i]]})
+              {"gt/{}_audio".format(i): wav[i, :, :wav_lengths[i]]})
 
         utils.summarize(writer=writer,
                         global_step=epoch,
@@ -567,12 +569,12 @@ if __name__ == "__main__":
   parser.add_argument('-c',
                       '--config',
                       type=str,
-                      default="./configs/default.yaml",
+                      default="./configs/config_en.yaml",
                       help='Path to configuration file')
   parser.add_argument('-m',
                       '--model',
                       type=str,
-                      required=True,
+                      default="LJ",
                       help='Model name')
   parser.add_argument('-r',
                       '--resume',

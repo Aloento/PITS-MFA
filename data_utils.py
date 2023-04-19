@@ -20,13 +20,10 @@ class TextAudioLoader(torch.utils.data.Dataset):
 
   def __init__(self, audiopaths_sid_text, hparams, pt_run=False):
     self.audiopaths_sid_text = load_filepaths_and_text(audiopaths_sid_text)
-    self.text_cleaners = hparams.text_cleaners
     self.sampling_rate = hparams.sampling_rate
     self.filter_length = hparams.filter_length
     self.hop_length = hparams.hop_length
     self.win_length = hparams.win_length
-
-    self.lang = hparams.languages
 
     self.add_blank = hparams.add_blank
     self.min_text_len = getattr(hparams, "min_text_len", 1)
@@ -210,7 +207,11 @@ class TextAudioCollate:
       phndur = row[4]
       phndur_padded[i, :phndur.size(0)] = phndur
 
-    return phonemes_padded, phonemes_lengths, spec_padded, spec_lengths, ying_padded, ying_lengths, wav_padded, wav_lengths, phndur_padded
+    return phonemes_padded, phonemes_lengths, \
+      spec_padded, spec_lengths, \
+      ying_padded, ying_lengths, \
+      wav_padded, wav_lengths, \
+      phndur_padded
 
 
 class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
