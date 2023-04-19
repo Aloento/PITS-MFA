@@ -81,7 +81,7 @@ def run(rank, n_gpus, hps, args):
                                           and args.initial_run)
     eval_loader = DataLoader(
       eval_dataset,
-      num_workers=10,
+      num_workers=8,
       shuffle=False,
       batch_size=hps.train.batch_size,
       pin_memory=use_pin_memory,
