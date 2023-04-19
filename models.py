@@ -295,7 +295,7 @@ class PosteriorEncoder(nn.Module):
     return z, m, logs, x_mask
 
 
-class Generator(nn.Module):
+class HiFiGANGenerator(nn.Module):
 
   def __init__(self,
                initial_channel,
@@ -306,7 +306,7 @@ class Generator(nn.Module):
                upsample_initial_channel,
                upsample_kernel_sizes,
                gin_channels=0):
-    super(Generator, self).__init__()
+    super(HiFiGANGenerator, self).__init__()
     self.num_kernels = len(resblock_kernel_sizes)
     self.num_upsamples = len(upsample_rates)
     self.conv_pre = Conv1d(initial_channel,
@@ -1030,10 +1030,18 @@ class SynthesizerTrn(nn.Module):
     self.yin_scope = yin_scope
 
     self.use_sdp = use_sdp
-    self.enc_p = TextEncoder(n_vocab, inter_channels, hidden_channels,
-                             filter_channels, n_heads, n_layers,
-                             kernel_size, p_dropout)
-    self.dec = Generator(
+    self.text_encoder = TextEncoder(
+      n_vocab,
+      inter_channels,
+      hidden_channels,
+      filter_channels,
+      n_heads,
+      n_layers,
+      kernel_size,
+      p_dropout
+    )
+
+    self.waveform_decoder = HiFiGANGenerator(
       inter_channels - yin_channels +
       yin_scope,
       resblock,
@@ -1042,53 +1050,42 @@ class SynthesizerTrn(nn.Module):
       upsample_rates,
       upsample_initial_channel,
       upsample_kernel_sizes,
-      gin_channels=gin_channels)
+      gin_channels=gin_channels
+    )
 
-    self.enc_spec = PosteriorEncoder(spec_channels,
-                                     inter_channels - yin_channels,
-                                     inter_channels - yin_channels,
-                                     5,
-                                     1,
-                                     16,
-                                     gin_channels=gin_channels)
+    self.posterior_encoder = PosteriorEncoder(
+      spec_channels,
+      inter_channels - yin_channels,
+      inter_channels - yin_channels,
+      5, 1, 16,
+      gin_channels=gin_channels
+    )
 
-    self.enc_pitch = PosteriorEncoder(yin_channels,
-                                      yin_channels,
-                                      yin_channels,
-                                      5,
-                                      1,
-                                      16,
-                                      gin_channels=gin_channels)
+    self.pitch_encoder = PosteriorEncoder(
+      yin_channels,
+      yin_channels,
+      yin_channels,
+      5, 1, 16,
+      gin_channels=gin_channels
+    )
 
-    self.flow = ResidualCouplingBlock(inter_channels,
-                                      hidden_channels,
-                                      5,
-                                      1,
-                                      4,
-                                      gin_channels=gin_channels)
+    self.flow = ResidualCouplingBlock(
+      inter_channels,
+      hidden_channels,
+      5, 1, 4,
+      gin_channels=gin_channels
+    )
 
-    if use_sdp:
-      self.dp = StochasticDurationPredictor(hidden_channels,
-                                            192,
-                                            3,
-                                            0.5,
-                                            4,
-                                            gin_channels=gin_channels)
-    else:
-      self.dp = DurationPredictor(hidden_channels,
-                                  256,
-                                  3,
-                                  0.5,
-                                  gin_channels=gin_channels)
+    self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)
 
-    self.yin_dec = YingDecoder(yin_scope,
-                               5,
-                               1,
-                               4,
-                               yin_start,
-                               yin_scope,
-                               yin_shift_range,
-                               gin_channels=gin_channels)
+    self.yin_decoder = YingDecoder(
+      yin_scope,
+      5, 1, 4,
+      yin_start,
+      yin_scope,
+      yin_shift_range,
+      gin_channels=gin_channels
+    )
 
     # self.vq = VQEmbedding(codebook_size, inter_channels - yin_channels)#inter_channels // 2)
     self.emb_g = nn.Embedding(self.n_speakers, gin_channels)
@@ -1132,20 +1129,20 @@ class SynthesizerTrn(nn.Module):
               ying_lengths,
               sid=None,
               scope_shift=0):
-    x, m_p, logs_p, x_mask = self.enc_p(x, t, x_lengths)
+    x, m_p, logs_p, x_mask = self.text_encoder(x, t, x_lengths)
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
     else:
       g = None
 
-    z_spec, m_spec, logs_spec, spec_mask = self.enc_spec(y, y_lengths, g=g)
+    z_spec, m_spec, logs_spec, spec_mask = self.posterior_encoder(y, y_lengths, g=g)
 
     # for Q option
     # z_spec_q_st, z_spec_q = self.vq.straight_through(z_spec)
     # z_spec_q_st = z_spec_q_st * spec_mask
     # z_spec_q = z_spec_q * spec_mask
 
-    z_yin, m_yin, logs_yin, yin_mask = self.enc_pitch(ying, y_lengths, g=g)
+    z_yin, m_yin, logs_yin, yin_mask = self.pitch_encoder(ying, y_lengths, g=g)
     z_yin_crop, logs_yin_crop, m_yin_crop = self.crop_scope(
       [z_yin, logs_yin, m_yin], scope_shift)
 
@@ -1207,7 +1204,7 @@ class SynthesizerTrn(nn.Module):
     z_slice, ids_slice = commons.rand_slice_segments_for_cat(
       z_dec_, torch.cat([y_lengths, y_lengths], dim=0),
       self.segment_size)
-    o_ = self.dec.hier_forward(z_slice, g=torch.cat([g, g], dim=0))
+    o_ = self.waveform_decoder.hier_forward(z_slice, g=torch.cat([g, g], dim=0))
     o = [torch.chunk(o_hier, 2, dim=0)[0] for o_hier in o_]
 
     o_pad = F.pad(o_[-1], (768, 768 + (-o_[-1].shape[-1]) % 256 + 256 *
@@ -1233,7 +1230,7 @@ class SynthesizerTrn(nn.Module):
             noise_scale_w=1.,
             max_len=None,
             scope_shift=0):  # need to fix #vector scope shift needed
-    x, m_p, logs_p, x_mask = self.enc_p(x, t, x_lengths)
+    x, m_p, logs_p, x_mask = self.text_encoder(x, t, x_lengths)
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
     else:
@@ -1265,7 +1262,7 @@ class SynthesizerTrn(nn.Module):
                                 dim=1)
     z_yin_crop = self.crop_scope([z_yin], scope_shift)[0]
     z_crop = torch.cat([z_spec, z_yin_crop], dim=1)
-    o = self.dec((z_crop * y_mask)[:, :, :max_len], g=g)
+    o = self.waveform_decoder((z_crop * y_mask)[:, :, :max_len], g=g)
     return o, attn, y_mask, (z_crop, z, z_p, m_p, logs_p)
 
   def infer_pre_decoder(self,
@@ -1278,7 +1275,7 @@ class SynthesizerTrn(nn.Module):
                         noise_scale_w=1.,
                         max_len=None,
                         scope_shift=0):
-    x, m_p, logs_p, x_mask = self.enc_p(x, t, x_lengths)
+    x, m_p, logs_p, x_mask = self.text_encoder(x, t, x_lengths)
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
     else:
@@ -1322,7 +1319,7 @@ class SynthesizerTrn(nn.Module):
       length_scale=1,
       noise_scale_w=1.,
   ):
-    x, m_p, logs_p, x_mask = self.enc_p(x, t, x_lengths)
+    x, m_p, logs_p, x_mask = self.text_encoder(x, t, x_lengths)
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
     else:
@@ -1376,4 +1373,4 @@ class SynthesizerTrn(nn.Module):
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
     else:
       g = None
-    return self.dec(decoder_inputs, g=g)
+    return self.waveform_decoder(decoder_inputs, g=g)
