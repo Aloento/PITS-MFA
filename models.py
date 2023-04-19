@@ -1117,7 +1117,8 @@ class SynthesizerTrn(nn.Module):
     z_slice, ids_slice = commons.rand_slice_segments_for_cat(
       z_dec_, torch.cat([spec_lengths, spec_lengths], dim=0),
       self.segment_size)
-    o_ = self.waveform_decoder.hier_forward(z_slice, g=torch.cat([g, g], dim=0))
+
+    o_ = self.waveform_decoder.hier_forward(z_slice)
     o = [torch.chunk(o_hier, 2, dim=0)[0] for o_hier in o_]
 
     o_pad = F.pad(o_[-1], (768, 768 + (-o_[-1].shape[-1]) % 256 + 256 *
