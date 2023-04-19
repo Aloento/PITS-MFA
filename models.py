@@ -1054,7 +1054,7 @@ class SynthesizerTrn(nn.Module):
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
     else:
       g = None
-    return self.yin_dec.infer(z_yin, z_mask, g)
+    return self.yin_decoder.infer(z_yin, z_mask, g)
 
   def forward(self, phonemes, phonemes_lengths, spec, spec_lengths, ying, ying_lengths, phndur, sid=None, scope_shift=0):
 
@@ -1070,7 +1070,7 @@ class SynthesizerTrn(nn.Module):
       [z_yin, logs_yin, m_yin], scope_shift)
 
     # yin dec loss
-    yin_gt_crop, yin_gt_shifted_crop, yin_dec_crop, z_yin_crop_shifted, scope_shift = self.yin_dec(
+    yin_gt_crop, yin_gt_shifted_crop, yin_dec_crop, z_yin_crop_shifted, scope_shift = self.yin_decoder(
       z_yin, ying, yin_mask, g)
 
     z = torch.cat([z_spec, z_yin], dim=1)
