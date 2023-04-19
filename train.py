@@ -368,20 +368,20 @@ def evaluate(hps, current_step, epoch, generator, eval_loader, writer):
         wav_lengths = wav_lengths[:n_sample]
 
         decoder_inputs, _, mask, (z_crop, z, *_) \
-          = generator.module.infer_pre_decoder(phonemes, phonemes_lengths, max_len=2000)
-        y_hat = generator.module.infer_decode_chunk(decoder_inputs)
+          = generator.infer_pre_decoder(phonemes, phonemes_lengths, max_len=2000)
+        y_hat = generator.infer_decode_chunk(decoder_inputs)
 
         # scope-shifted
         z_spec, z_yin = torch.split(z,
                                     hps.model.inter_channels -
                                     hps.model.yin_channels,
                                     dim=1)
-        z_yin_crop = generator.module.crop_scope([z_yin], 6)[0]
+        z_yin_crop = generator.crop_scope([z_yin], 6)[0]
         z_crop_shift = torch.cat([z_spec, z_yin_crop], dim=1)
         decoder_inputs_shift = z_crop_shift * mask
-        y_hat_shift = generator.module.infer_decode_chunk(decoder_inputs_shift)
+        y_hat_shift = generator.infer_decode_chunk(decoder_inputs_shift)
         z_yin = z_yin * mask
-        yin_hat = generator.module.yin_dec_infer(z_yin, mask)
+        yin_hat = generator.yin_dec_infer(z_yin, mask)
 
         y_hat_mel_length = mask.sum([1, 2]).long()
         y_hat_lengths = y_hat_mel_length * hps.data.hop_length
@@ -415,8 +415,8 @@ def evaluate(hps, current_step, epoch, generator, eval_loader, writer):
            hps.data.hop_length *
            (y_hat.shape[-1] % hps.data.hop_length == 0)),
           mode='reflect').squeeze(1)
-        ying_hat = generator.module.pitch.yingram(y_hat_pad)
-        ying_hat_shift = generator.module.pitch.yingram(
+        ying_hat = generator.pitch.yingram(y_hat_pad)
+        ying_hat_shift = generator.pitch.yingram(
           y_hat_shift_pad)
 
         if y_hat_mel.size(2) < mel.size(2):
