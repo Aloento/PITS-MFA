@@ -21,7 +21,7 @@ train:
   alpha: 200
 
 data:
-  data_path: "./filelists/wav"
+  data_path: "filelists/wavs"
   training_files: "filelists/LJ.Train.csv"
   validation_files: "filelists/LJ.Val.csv"
   sampling_rate: 22050
