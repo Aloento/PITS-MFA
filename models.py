@@ -969,7 +969,6 @@ class SynthesizerTrn(nn.Module):
     self.yin_start = yin_start
     self.yin_scope = yin_scope
 
-    self.use_sdp = use_sdp
     self.text_encoder = TextEncoder(
       n_vocab,
       inter_channels,
@@ -1187,14 +1186,7 @@ class SynthesizerTrn(nn.Module):
     else:
       g = None
 
-    if self.use_sdp:
-      logw = self.dp(x,
-                     x_mask,
-                     g=g,
-                     reverse=True,
-                     noise_scale=noise_scale_w)
-    else:
-      logw = self.dp(x, x_mask, g=g)
+    logw = self.dp(x, x_mask, g=g)
     w = torch.exp(logw) * x_mask * length_scale
     w_ceil = torch.ceil(w)
     y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
@@ -1231,14 +1223,7 @@ class SynthesizerTrn(nn.Module):
     else:
       g = None
 
-    if self.use_sdp:
-      logw = self.dp(x,
-                     x_mask,
-                     g=g,
-                     reverse=True,
-                     noise_scale=noise_scale_w)
-    else:
-      logw = self.dp(x, x_mask, g=g)
+    logw = self.dp(x, x_mask, g=g)
     w = torch.exp(logw) * x_mask * length_scale
     w_ceil = torch.ceil(w)
     return w_ceil, x, m_p, logs_p, x_mask, g
