@@ -162,35 +162,38 @@ class TextAudioCollate:
       dim=0,
       descending=True)
 
-    max_text_len = max([len(x[0]) for x in batch])
+    # phonemes, spec, ying, wav, phn_dur
+    max_phonemes_len = max([len(x[0]) for x in batch])
     max_spec_len = max([x[1].size(1) for x in batch])
     max_ying_len = max([x[2].size(1) for x in batch])
     max_wav_len = max([x[3].size(1) for x in batch])
+    max_phndur_len = max([len(x[4]) for x in batch])
 
-    text_lengths = torch.LongTensor(len(batch))
+    phonemes_lengths = torch.LongTensor(len(batch))
     spec_lengths = torch.LongTensor(len(batch))
     ying_lengths = torch.LongTensor(len(batch))
     wav_lengths = torch.LongTensor(len(batch))
-    sid = torch.LongTensor(len(batch))
 
-    text_padded = torch.LongTensor(len(batch), max_text_len)
-    tone_padded = torch.LongTensor(len(batch), max_text_len)
+    phonemes_padded = torch.LongTensor(len(batch), max_phonemes_len)
     spec_padded = torch.FloatTensor(len(batch), batch[0][1].size(0),
                                     max_spec_len)
     ying_padded = torch.FloatTensor(len(batch), batch[0][2].size(0),
                                     max_ying_len)
     wav_padded = torch.FloatTensor(len(batch), 1, max_wav_len)
-    text_padded.zero_()
-    tone_padded.zero_()
+    phndur_padded = torch.LongTensor(len(batch), max_phndur_len)
+
+    phonemes_padded.zero_()
     spec_padded.zero_()
     ying_padded.zero_()
     wav_padded.zero_()
+    phndur_padded.zero_()
+
     for i in range(len(ids_sorted_decreasing)):
       row = batch[ids_sorted_decreasing[i]]
 
-      text = row[0]
-      text_padded[i, :text.size(0)] = text
-      text_lengths[i] = text.size(0)
+      phonemes = row[0]
+      phonemes_padded[i, :phonemes.size(0)] = phonemes
+      phonemes_lengths[i] = phonemes.size(0)
 
       spec = row[1]
       spec_padded[i, :, :spec.size(1)] = spec
@@ -204,18 +207,13 @@ class TextAudioCollate:
       wav_padded[i, :, :wav.size(1)] = wav
       wav_lengths[i] = wav.size(1)
 
-      tone = row[5]
-      tone_padded[i, :text.size(0)] = tone
+      phndur = row[4]
+      phndur_padded[i, :phndur.size(0)] = phndur
 
-      sid[i] = row[4]
-
-    if self.return_ids:
-      return text_padded, text_lengths, spec_padded, spec_lengths, wav_padded, wav_lengths, sid, ids_sorted_decreasing
-    return text_padded, text_lengths, spec_padded, spec_lengths, ying_padded, ying_lengths, wav_padded, wav_lengths, sid, tone_padded
+    return phonemes_padded, phonemes_lengths, spec_padded, spec_lengths, ying_padded, ying_lengths, wav_padded, wav_lengths, phndur_padded
 
 
-class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler
-                               ):
+class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
   """
   Maintain similar input lengths in a batch.
   Length groups are specified by boundaries.
