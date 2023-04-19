@@ -334,7 +334,7 @@ def evaluate(hps, current_step, epoch, generator, eval_loader, writer):
           _, \
           (z_spec, m_spec, logs_spec, spec_mask, z_yin, m_yin, logs_yin, yin_mask), \
           (yin_gt_crop, yin_gt_shifted_crop, yin_dec_crop, yin_hat_crop, scope_shift, yin_hat_shifted) \
-          = generator.module(
+          = generator(
           phonemes, phonemes_lengths, spec, spec_lengths, ying, ying_lengths, phndur
         )
 
