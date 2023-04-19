@@ -67,8 +67,7 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
     audiopaths_sid_text_new = []
     lengths = []
     for audiopath, text, spk in self.audiopaths_sid_text:
-      if self.min_text_len <= len(text) and len(
-          text) <= self.max_text_len:
+      if self.min_text_len <= len(text) <= self.max_text_len:
         audiopath = os.path.join(self.data_path, audiopath)
         audiopaths_sid_text_new.append([audiopath, text, spk])
         lengths.append(
@@ -83,12 +82,12 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
     text, tone = self.get_text(text)
     spec, ying, wav = self.get_audio(audiopath, pt_run)
     sid = self.get_sid(self.speaker_dict[spk])
-    return (text, spec, ying, wav, sid, tone)
+    return text, spec, ying, wav, sid, tone
 
   def get_audio(self, filename, pt_run=False):
     audio, sampling_rate = load_wav_to_torch(filename)
     if sampling_rate != self.sampling_rate:
-      raise ValueError("{} {} SR doesn't match target {} SR".format(
+      raise ValueError("{} SR doesn't match target {} SR".format(
         sampling_rate, self.sampling_rate))
     audio_norm = audio.unsqueeze(0)
     spec_filename = filename.replace(".wav", ".spec.pt")
@@ -331,7 +330,7 @@ def create_spec(audiopaths_sid_text, hparams):
     audiopath = os.path.join(hparams.data_path, audiopath)
     audio, sampling_rate = load_wav_to_torch(audiopath)
     if sampling_rate != hparams.sampling_rate:
-      raise ValueError("{} {} SR doesn't match target {} SR".format(
+      raise ValueError("{} SR doesn't match target {} SR".format(
         sampling_rate, hparams.sampling_rate))
     audio_norm = audio.unsqueeze(0)
     specpath = audiopath.replace(".wav", ".spec.pt")
