@@ -58,7 +58,7 @@ class TextAudioLoader(torch.utils.data.Dataset):
     lengths = []
     for id_, phonemes, durations in self.audiopaths_sid_text:
       if self.min_text_len <= len(phonemes) <= self.max_text_len:
-        wav_path = os.path.join(self.data_path, id_)
+        wav_path = os.path.join(self.data_path, id_) + ".wav"
         audiopaths_sid_text_new.append([wav_path, phonemes, durations])
         lengths.append(os.path.getsize(wav_path) // (2 * self.hop_length))
 
@@ -333,7 +333,7 @@ class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
 def create_spec(audiopaths_sid_text, hparams):
   audiopaths_sid_text = load_filepaths_and_text(audiopaths_sid_text)
   for audiopath, _, _ in audiopaths_sid_text:
-    audiopath = os.path.join(hparams.data_path, audiopath)
+    audiopath = os.path.join(hparams.data_path, audiopath) + ".wav"
     audio, sampling_rate = load_wav_to_torch(audiopath)
     if sampling_rate != hparams.sampling_rate:
       raise ValueError("{} SR doesn't match target {} SR".format(
