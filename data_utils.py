@@ -89,7 +89,7 @@ class TextAudioLoader(torch.utils.data.Dataset):
 
     assert phonemes.shape == phn_dur.shape, wav_path
     assert sumdur == wav.shape[-1] // self.hop_length
-    assert spec.shape == ying.shape, (spec.shape, ying.shape)
+    assert spec.shape[1] == ying.shape[1], (spec.shape[1], ying.shape[1])
 
     return phonemes, spec, ying, wav, phn_dur
 
