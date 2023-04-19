@@ -65,8 +65,7 @@ def run(n_gpus, hps, args):
   collate_fn = TextAudioCollate()
 
   eval_dataset = TextAudioLoader(hps.data.validation_files,
-                                 hps.data, rank == 0
-                                 and args.initial_run)
+                                 hps.data, args.initial_run)
   eval_loader = DataLoader(
     eval_dataset,
     num_workers=2,
