@@ -143,7 +143,7 @@ def run(n_gpus, hps, args):
   outer_bar.update(epoch_str)
 
   for epoch in range(epoch_str, hps.train.epochs + 1):
-    train_and_evaluate(0, epoch, hps, [net_g, net_d],
+    train_and_evaluate(epoch, hps, [net_g, net_d],
                        [optim_g, optim_d], [scheduler_g, scheduler_d],
                        scaler, [train_loader, eval_loader], writer)
 
