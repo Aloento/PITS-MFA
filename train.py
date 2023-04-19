@@ -34,14 +34,11 @@ def main(args):
   assert torch.cuda.is_available(), "CPU training is not allowed."
 
   n_gpus = torch.cuda.device_count()
-  os.environ['MASTER_ADDR'] = 'localhost'
-  os.environ['MASTER_PORT'] = '8000'
-
   hps = utils.get_hparams(args)
   # create spectrogram files
   create_spec(hps.data.training_files, hps.data)
   create_spec(hps.data.validation_files, hps.data)
-  mp.spawn(run, nprocs=n_gpus, args=(n_gpus, hps, args))
+  run(n_gpus, hps, args)
 
 
 def count_parameters(model, scale=1000000):
@@ -49,61 +46,43 @@ def count_parameters(model, scale=1000000):
              for p in model.parameters() if p.requires_grad) / scale
 
 
-def run(rank, n_gpus, hps, args):
+def run(n_gpus, hps, args):
   global global_step
-  if rank == 0:
-    logger = utils.get_logger(hps.model_dir)
-    logger.info('MODEL NAME: {} in {}'.format(args.model, hps.model_dir))
-    logger.info(
-      'GPU: Use {} gpu(s) with batch size {} (FP16 running: {})'.format(
-        n_gpus, hps.train.batch_size, hps.train.fp16_run))
 
-    utils.check_git_hash(hps.model_dir)
-    writer = SummaryWriter(log_dir=hps.model_dir)
+  logger = utils.get_logger(hps.model_dir)
+  logger.info('MODEL NAME: {} in {}'.format(args.model, hps.model_dir))
+  logger.info(
+    'GPU: Use {} gpu(s) with batch size {} (FP16 running: {})'.format(
+      n_gpus, hps.train.batch_size, hps.train.fp16_run))
 
-  dist.init_process_group(backend='nccl',
-                          init_method='env://',
-                          world_size=n_gpus,
-                          rank=rank,
-                          group_name=args.model)
+  utils.check_git_hash(hps.model_dir)
+  writer = SummaryWriter(log_dir=hps.model_dir)
+
   torch.manual_seed(hps.train.seed)
-  torch.cuda.set_device(rank)
 
-  use_persistent_workers = hps.data.persistent_workers
-  use_pin_memory = not use_persistent_workers
   train_dataset = TextAudioLoader(hps.data.training_files, hps.data,
-                                  rank == 0 and args.initial_run)
+                                  args.initial_run)
   collate_fn = TextAudioCollate()
-  if rank == 0:
-    eval_dataset = TextAudioLoader(hps.data.validation_files,
-                                   hps.data, rank == 0
-                                   and args.initial_run)
-    eval_loader = DataLoader(
-      eval_dataset,
-      num_workers=2,
-      shuffle=False,
-      batch_size=hps.train.batch_size,
-      drop_last=False,
-      collate_fn=collate_fn,
-    )
-  elif args.initial_run:
-    print(f'rank: {rank} is waiting...')
-  dist.barrier()
-  if rank == 0:
-    logger.info('Training Started')
-  train_sampler = DistributedBucketSampler(
-    train_dataset,
-    hps.train.batch_size,
-    [32, 500, 600, 700, 800, 900, 1100, 1300, 1500],
-    num_replicas=n_gpus,
-    rank=rank,
-    shuffle=True)
+
+  eval_dataset = TextAudioLoader(hps.data.validation_files,
+                                 hps.data, rank == 0
+                                 and args.initial_run)
+  eval_loader = DataLoader(
+    eval_dataset,
+    num_workers=2,
+    shuffle=False,
+    batch_size=hps.train.batch_size,
+    drop_last=False,
+    collate_fn=collate_fn,
+  )
+
+  logger.info('Training Started')
+
   train_loader = DataLoader(
     train_dataset,
     num_workers=8,
-    shuffle=False,
+    shuffle=True,
     collate_fn=collate_fn,
-    batch_sampler=train_sampler,
     persistent_workers=True
   )
 
@@ -113,13 +92,13 @@ def run(rank, n_gpus, hps, args):
                          midi_start=hps.data.midi_start,
                          midi_end=hps.data.midi_end,
                          octave_range=hps.data.octave_range,
-                         **hps.model).cuda(rank)
-  net_d = AvocodoDiscriminator(hps.model.use_spectral_norm).cuda(rank)
-  if rank == 0:
-    logger.info('MODEL SIZE: G {:.2f}M and D {:.2f}M'.format(
-      count_parameters(net_g),
-      count_parameters(net_d),
-    ))
+                         **hps.model).cuda()
+  net_d = AvocodoDiscriminator(hps.model.use_spectral_norm).cuda()
+
+  logger.info('MODEL SIZE: G {:.2f}M and D {:.2f}M'.format(
+    count_parameters(net_g),
+    count_parameters(net_d),
+  ))
 
   optim_g = torch.optim.AdamW(net_g.parameters(),
                               hps.train.learning_rate,
@@ -129,18 +108,18 @@ def run(rank, n_gpus, hps, args):
                               hps.train.learning_rate,
                               betas=hps.train.betas,
                               eps=hps.train.eps)
-  net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
-  net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
+  net_g = DDP(net_g, find_unused_parameters=True)
+  net_d = DDP(net_d, find_unused_parameters=True)
 
   if args.transfer:
-    _, _, _, _, _, _, _ = utils.load_checkpoint(args.transfer, rank, net_g,
+    _, _, _, _, _, _, _ = utils.load_checkpoint(args.transfer, 0, net_g,
                                                 net_d, None, None)
     epoch_str = 1
     global_step = 0
 
   elif args.force_resume:
     _, _, _, epoch_save, _ = utils.load_checkpoint_diffsize(
-      args.force_resume, rank, net_g, net_d)
+      args.force_resume, 0, net_g, net_d)
     epoch_str = epoch_save + 1
     global_step = epoch_save * len(train_loader) + 1
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(
@@ -149,7 +128,7 @@ def run(rank, n_gpus, hps, args):
       optim_d, gamma=hps.train.lr_decay, last_epoch=-1)
   elif args.resume:
     _, _, _, _, _, epoch_save, _ = utils.load_checkpoint(
-      args.resume, rank, net_g, net_d, optim_g, optim_d)
+      args.resume, 0, net_g, net_d, optim_g, optim_d)
     epoch_str = epoch_save + 1
     global_step = epoch_save * len(train_loader) + 1
   else:
@@ -162,45 +141,40 @@ def run(rank, n_gpus, hps, args):
     optim_d, gamma=hps.train.lr_decay, last_epoch=epoch_str - 2)
 
   scaler = GradScaler(enabled=hps.train.fp16_run)
-  if rank == 0:
-    outer_bar = tqdm(total=hps.train.epochs,
-                     desc="Training",
-                     position=0,
-                     leave=False)
-    outer_bar.update(epoch_str)
+
+  outer_bar = tqdm(total=hps.train.epochs,
+                   desc="Training",
+                   position=0,
+                   leave=False)
+  outer_bar.update(epoch_str)
 
   for epoch in range(epoch_str, hps.train.epochs + 1):
-    if rank == 0:
-      train_and_evaluate(rank, epoch, hps, [net_g, net_d],
-                         [optim_g, optim_d], [scheduler_g, scheduler_d],
-                         scaler, [train_loader, eval_loader], writer)
-    else:
-      train_and_evaluate(rank, epoch, hps, [net_g, net_d],
-                         [optim_g, optim_d], [scheduler_g, scheduler_d],
-                         scaler, [train_loader, None], None)
+    train_and_evaluate(0, epoch, hps, [net_g, net_d],
+                       [optim_g, optim_d], [scheduler_g, scheduler_d],
+                       scaler, [train_loader, eval_loader], writer)
+
     scheduler_g.step()
     scheduler_d.step()
-    if rank == 0:
-      outer_bar.update(1)
+    outer_bar.update(1)
 
 
-def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler,
+def train_and_evaluate(epoch, hps, nets, optims, schedulers, scaler,
                        loaders, writer):
   net_g, net_d = nets
   optim_g, optim_d = optims
   scheduler_g, scheduler_d = schedulers
   train_loader, eval_loader = loaders
-  aug = PhaseAug().cuda(rank)
+  aug = PhaseAug().cuda()
   train_loader.batch_sampler.set_epoch(epoch)
   global global_step
 
   net_g.train()
   net_d.train()
-  if rank == 0:
-    inner_bar = tqdm(total=len(train_loader),
-                     desc="Epoch {}".format(epoch),
-                     position=1,
-                     leave=False)
+
+  inner_bar = tqdm(total=len(train_loader),
+                   desc="Epoch {}".format(epoch),
+                   position=1,
+                   leave=False)
 
   for batch_idx, (phonemes, phonemes_lengths,
                   spec, spec_lengths,
@@ -208,19 +182,13 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler,
                   wav, wav_lengths,
                   phndur) in enumerate(train_loader):
 
-    phonemes, phonemes_lengths = phonemes.cuda(rank, non_blocking=True), phonemes_lengths.cuda(
-      rank, non_blocking=True)
-    spec, spec_lengths = spec.cuda(
-      rank, non_blocking=True), spec_lengths.cuda(rank,
-                                                  non_blocking=True)
-    ying, ying_lengths = ying.cuda(
-      rank, non_blocking=True), ying_lengths.cuda(rank,
-                                                  non_blocking=True)
+    phonemes, phonemes_lengths = phonemes.cuda(non_blocking=True), phonemes_lengths.cuda( non_blocking=True)
+    spec, spec_lengths = spec.cuda(non_blocking=True), spec_lengths.cuda(non_blocking=True)
+    ying, ying_lengths = ying.cuda(non_blocking=True), ying_lengths.cuda(non_blocking=True)
 
-    wav, wav_lengths = wav.cuda(rank, non_blocking=True), wav_lengths.cuda(
-      rank, non_blocking=True)
+    wav, wav_lengths = wav.cuda(non_blocking=True), wav_lengths.cuda(non_blocking=True)
 
-    phndur = phndur.cuda(rank, non_blocking=True)
+    phndur = phndur.cuda(non_blocking=True)
 
     with autocast(enabled=hps.train.fp16_run):
       y_hat, l_length, attn, ids_slice, x_mask, z_mask, y_hat_, \
@@ -301,44 +269,43 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler,
     scaler.step(optim_g)
     scaler.update()
 
-    if rank == 0:
-      inner_bar.update(1)
-      inner_bar.set_description(
-        "Epoch {} | g {: .04f} d {: .04f}|".format(
-          epoch, loss_gen_all, loss_disc_all))
-      if global_step % hps.train.log_interval == 0:
-        lr = optim_g.param_groups[0]['lr']
+    inner_bar.update(1)
+    inner_bar.set_description(
+      "Epoch {} | g {: .04f} d {: .04f}|".format(
+        epoch, loss_gen_all, loss_disc_all))
+    if global_step % hps.train.log_interval == 0:
+      lr = optim_g.param_groups[0]['lr']
 
-        scalar_dict = {
-          "learning_rate": lr,
-          "loss/g/score": sum(losses_gen),
-          "loss/g/fm": loss_fm,
-          "loss/g/mel": loss_mel,
-          "loss/g/dur": loss_dur,
-          "loss/g/kl": loss_kl,
-          "loss/g/yindec": loss_yin_dec,
-          "loss/g/yinshift": loss_yin_shift,
-          "loss/g/total": loss_gen_all,
-          "loss/d/real": sum(losses_disc_r),
-          "loss/d/gen": sum(losses_disc_g),
-          "loss/d/total": loss_disc_all,
-        }
+      scalar_dict = {
+        "learning_rate": lr,
+        "loss/g/score": sum(losses_gen),
+        "loss/g/fm": loss_fm,
+        "loss/g/mel": loss_mel,
+        "loss/g/dur": loss_dur,
+        "loss/g/kl": loss_kl,
+        "loss/g/yindec": loss_yin_dec,
+        "loss/g/yinshift": loss_yin_shift,
+        "loss/g/total": loss_gen_all,
+        "loss/d/real": sum(losses_disc_r),
+        "loss/d/gen": sum(losses_disc_g),
+        "loss/d/total": loss_disc_all,
+      }
 
-        utils.summarize(writer=writer,
-                        global_step=global_step,
-                        scalars=scalar_dict)
-      if global_step % hps.train.eval_interval == 0:
-        evaluate(hps, global_step, epoch, net_g, eval_loader, writer)
+      utils.summarize(writer=writer,
+                      global_step=global_step,
+                      scalars=scalar_dict)
+
+    if global_step % hps.train.eval_interval == 0:
+      evaluate(hps, global_step, epoch, net_g, eval_loader, writer)
 
     global_step += 1
 
-  if rank == 0:
-    if epoch % hps.train.save_interval == 0:
-      utils.save_checkpoint(
-        net_g, optim_g, net_d, optim_d, hps, epoch,
-        hps.train.learning_rate,
-        os.path.join(hps.model_dir,
-                     "{}_{}.pth".format(hps.model_name, epoch)))
+  if epoch % hps.train.save_interval == 0:
+    utils.save_checkpoint(
+      net_g, optim_g, net_d, optim_d, hps, epoch,
+      hps.train.learning_rate,
+      os.path.join(hps.model_dir,
+                   "{}_{}.pth".format(hps.model_name, epoch)))
 
 
 def evaluate(hps, current_step, epoch, generator, eval_loader, writer):
