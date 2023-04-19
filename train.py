@@ -159,7 +159,6 @@ def train_and_evaluate(epoch, hps, nets, optims, schedulers, scaler,
   scheduler_g, scheduler_d = schedulers
   train_loader, eval_loader = loaders
   aug = PhaseAug().cuda()
-  train_loader.batch_sampler.set_epoch(epoch)
   global global_step
 
   net_g.train()
