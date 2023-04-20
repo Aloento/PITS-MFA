@@ -80,7 +80,7 @@ def run(n_gpus, hps, args):
     shuffle=True,
     batch_size=hps.train.batch_size,
     collate_fn=collate_fn,
-    pin_memory=True,
+    persistent_workers=True,
   )
 
   net_g = SynthesizerTrn(len(symbols),
