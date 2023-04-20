@@ -803,6 +803,7 @@ class LengthRegulator(nn.Module):
     super(LengthRegulator, self).__init__()
 
   def LR(self, x, duration, max_len):
+    x = torch.transpose(x, 1, 2)
     output = list()
     mel_len = list()
     for batch, expand_target in zip(x, duration):
@@ -814,15 +815,22 @@ class LengthRegulator(nn.Module):
       output = pad(output, max_len)
     else:
       output = pad(output)
+    output = torch.transpose(output, 1, 2)
 
-    return output, torch.LongTensor(mel_len).cuda()
+    return output, torch.LongTensor(mel_len)
 
   def expand(self, batch, predicted):
+    predicted = torch.squeeze(predicted)
     out = list()
 
     for i, vec in enumerate(batch):
       expand_size = predicted[i].item()
-      out.append(vec.expand(max(int(expand_size), 0), -1))
+      state_info_index = torch.unsqueeze(torch.arange(0, expand_size), 1).float()
+      state_info_length = torch.unsqueeze(torch.Tensor([expand_size] * expand_size), 1).float()
+      state_info = torch.cat([state_info_index, state_info_length], 1).to(vec.device)
+      new_vec = vec.expand(max(int(expand_size), 0), -1)
+      new_vec = torch.cat([new_vec, state_info], 1)
+      out.append(new_vec)
     out = torch.cat(out, 0)
 
     return out
@@ -1075,8 +1083,8 @@ class SynthesizerTrn(nn.Module):
 
     # 音素级别转换成帧级
     x_frame, x_lengths = self.lr(x, phndur, phonemes_lengths)
-    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.device)
     x_frame = x_frame.to(x.device)
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.dtype).to(x.device)
 
     # 帧先验网络
     x_frame = self.frame_prior_net(x_frame, x_mask)
@@ -1125,8 +1133,7 @@ class SynthesizerTrn(nn.Module):
 
     x_frame, x_lengths = self.lr(x, duration, phonemes_lengths)
     x_frame = x_frame.to(x.device)
-    # x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.device)
-    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, None), 1).to(x.device)
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.dtype).to(x.device)
 
     x_frame = self.frame_prior_net(x_frame, x_mask)
     x_frame = x_frame.transpose(1, 2)
@@ -1165,8 +1172,7 @@ class SynthesizerTrn(nn.Module):
 
     x_frame, x_lengths = self.lr(x, duration, phonemes_lengths)
     x_frame = x_frame.to(x.device)
-    # x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.device)
-    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, None), 1).to(x.device)
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.dtype).to(x.device)
 
     x_frame = self.frame_prior_net(x_frame, x_mask)
     x_frame = x_frame.transpose(1, 2)
