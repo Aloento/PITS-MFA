@@ -1081,8 +1081,7 @@ class SynthesizerTrn(nn.Module):
     logw_ = torch.log(phndur.detach().float() + 1).unsqueeze(1) * x_mask
     logw = self.duration_predictor(x, x_mask, g=g)
     l_loss = torch.sum((logw - logw_) ** 2, [1, 2])
-    x_mask_sum = torch.sum(x_mask)
-    l_length = l_loss / x_mask_sum
+    l_length = l_loss / torch.sum(x_mask)
 
     # 音素级别转换成帧级
     x_frame, x_lengths = self.lr(x, phndur, phonemes_lengths)
@@ -1178,14 +1177,14 @@ class SynthesizerTrn(nn.Module):
 
     x_frame, x_lengths = self.lr(x, duration, phonemes_lengths)
     x_frame = x_frame.to(x.device)
-    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.device)
+
+    x_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, None), 1).to(x_mask.dtype)
+    # x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.device)
 
     x_frame = self.frame_prior_net(x_frame, x_mask)
     x_frame = x_frame.transpose(1, 2)
     m_p, logs_p = self.project(x_frame, x_mask)
-
-    # y_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
-    # y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
 
     z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
     z = self.flow(z_p, x_mask, g=g, reverse=True)
@@ -1197,7 +1196,6 @@ class SynthesizerTrn(nn.Module):
     decoder_inputs = z_crop * x_mask
 
     return decoder_inputs, x_mask, (z_crop, z, z_p, m_p, logs_p)
-
 
   def infer_decode_chunk(self, decoder_inputs, sid=None):
     if self.n_speakers > 0:
