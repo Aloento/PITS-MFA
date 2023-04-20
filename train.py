@@ -85,6 +85,8 @@ def run(n_gpus, hps, args):
 
   net_g = SynthesizerTrn(len(symbols),
                          hps.data.filter_length // 2 + 1,
+                         hps.data.hop_length,
+                         hps.data.sampling_rate,
                          hps.train.segment_size // hps.data.hop_length,
                          midi_start=hps.data.midi_start,
                          midi_end=hps.data.midi_end,
@@ -185,7 +187,7 @@ def train_and_evaluate(epoch, hps, nets, optims, schedulers, scaler,
     phndur = phndur.cuda(non_blocking=True)
 
     with autocast(enabled=hps.train.fp16_run):
-      y_hat, l_length, attn, ids_slice, x_mask, z_mask, y_hat_, \
+      y_hat, l_length, ids_slice, x_mask, z_mask, y_hat_, \
         (z, z_p, m_p, logs_p, m_q, logs_q), _, \
         (z_spec, m_spec, logs_spec, spec_mask, z_yin, m_yin, logs_yin, yin_mask), \
         (yin_gt_crop, yin_gt_shifted_crop, yin_dec_crop, yin_hat_crop, scope_shift, yin_hat_shifted) \
@@ -330,7 +332,7 @@ def evaluate(hps, current_step, epoch, generator, eval_loader, writer):
       phndur = phndur.cuda(0, non_blocking=True)
 
       with autocast(enabled=hps.train.fp16_run):
-        y_hat, l_length, attn, ids_slice, x_mask, z_mask, y_hat_, \
+        y_hat, l_length, ids_slice, x_mask, z_mask, y_hat_, \
           (z, z_p, m_p, logs_p, m_q, logs_q), \
           _, \
           (z_spec, m_spec, logs_spec, spec_mask, z_yin, m_yin, logs_yin, yin_mask), \

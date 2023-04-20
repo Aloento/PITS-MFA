@@ -13,115 +13,56 @@ import commons
 import modules
 from analysis import Pitch
 from commons import init_weights, get_padding
-from monotonic_align import maximum_path
 from pqmf import PQMF
 
 
-class StochasticDurationPredictor(nn.Module):
+class DurationPredictor(nn.Module):
 
   def __init__(self,
                in_channels,
                filter_channels,
                kernel_size,
                p_dropout,
-               n_flows=4,
                gin_channels=0):
     super().__init__()
+
     self.in_channels = in_channels
     self.filter_channels = filter_channels
     self.kernel_size = kernel_size
     self.p_dropout = p_dropout
-    self.n_flows = n_flows
     self.gin_channels = gin_channels
 
-    self.log_flow = modules.Log()
-    self.flows = nn.ModuleList()
-    self.flows.append(modules.ElementwiseAffine(2))
-    for i in range(n_flows):
-      self.flows.append(
-        modules.ConvFlow(2, filter_channels, kernel_size, n_layers=3))
-      self.flows.append(modules.Flip())
+    self.drop = nn.Dropout(p_dropout)
+    self.conv_1 = nn.Conv1d(in_channels,
+                            filter_channels,
+                            kernel_size,
+                            padding=kernel_size // 2)
+    self.norm_1 = modules.LayerNorm(filter_channels)
+    self.conv_2 = nn.Conv1d(filter_channels,
+                            filter_channels,
+                            kernel_size,
+                            padding=kernel_size // 2)
+    self.norm_2 = modules.LayerNorm(filter_channels)
+    self.proj = nn.Conv1d(filter_channels, 1, 1)
 
-    self.post_pre = nn.Conv1d(1, filter_channels, 1)
-    self.post_proj = nn.Conv1d(filter_channels, filter_channels, 1)
-    self.post_convs = modules.DDSConv(filter_channels,
-                                      kernel_size,
-                                      n_layers=3,
-                                      p_dropout=p_dropout)
-    self.post_flows = nn.ModuleList()
-    self.post_flows.append(modules.ElementwiseAffine(2))
-    for i in range(4):
-      self.post_flows.append(
-        modules.ConvFlow(2, filter_channels, kernel_size, n_layers=3))
-      self.post_flows.append(modules.Flip())
-
-    self.pre = nn.Conv1d(in_channels, filter_channels, 1)
-    self.proj = nn.Conv1d(filter_channels, filter_channels, 1)
-    self.convs = modules.DDSConv(filter_channels,
-                                 kernel_size,
-                                 n_layers=3,
-                                 p_dropout=p_dropout)
     if gin_channels != 0:
-      self.cond = nn.Conv1d(gin_channels, filter_channels, 1)
+      self.cond = nn.Conv1d(gin_channels, in_channels, 1)
 
-  def forward(self,
-              x,
-              x_mask,
-              w=None,
-              g=None,
-              reverse=False,
-              noise_scale=1.0):
+  def forward(self, x, x_mask, g=None):
     x = torch.detach(x)
-    x = self.pre(x)
     if g is not None:
       g = torch.detach(g)
       x = x + self.cond(g)
-    x = self.convs(x, x_mask)
-    x = self.proj(x) * x_mask
-
-    if not reverse:
-      flows = self.flows
-      assert w is not None
-
-      logdet_tot_q = 0
-      h_w = self.post_pre(w)
-      h_w = self.post_convs(h_w, x_mask)
-      h_w = self.post_proj(h_w) * x_mask
-      e_q = torch.randn(w.size(0), 2, w.size(2)).to(
-        device=x.device, dtype=x.dtype) * x_mask
-      z_q = e_q
-      for flow in self.post_flows:
-        z_q, logdet_q = flow(z_q, x_mask, g=(x + h_w))
-        logdet_tot_q += logdet_q
-      z_u, z1 = torch.split(z_q, [1, 1], 1)
-      u = torch.sigmoid(z_u) * x_mask
-      z0 = (w - u) * x_mask
-      logdet_tot_q += torch.sum(
-        (F.logsigmoid(z_u) + F.logsigmoid(-z_u)) * x_mask, [1, 2])
-      logq = torch.sum(
-        -0.5 * (math.log(2 * math.pi) +
-                (e_q ** 2)) * x_mask, [1, 2]) - logdet_tot_q
-
-      logdet_tot = 0
-      z0, logdet = self.log_flow(z0, x_mask)
-      logdet_tot += logdet
-      z = torch.cat([z0, z1], 1)
-      for flow in flows:
-        z, logdet = flow(z, x_mask, g=x, reverse=reverse)
-        logdet_tot = logdet_tot + logdet
-      nll = torch.sum(0.5 * (math.log(2 * math.pi) +
-                             (z ** 2)) * x_mask, [1, 2]) - logdet_tot
-      return nll + logq  # [b]
-    else:
-      flows = list(reversed(self.flows))
-      flows = flows[:-2] + [flows[-1]]  # remove a useless vflow
-      z = torch.randn(x.size(0), 2, x.size(2)).to(
-        device=x.device, dtype=x.dtype) * noise_scale
-      for flow in flows:
-        z = flow(z, x_mask, g=x, reverse=reverse)
-      z0, z1 = torch.split(z, [1, 1], 1)
-      logw = z0
-      return logw
+    x = self.conv_1(x * x_mask)
+    x = torch.relu(x)
+    x = self.norm_1(x)
+    x = self.drop(x)
+    x = self.conv_2(x * x_mask)
+    x = torch.relu(x)
+    x = self.norm_2(x)
+    x = self.drop(x)
+    x = self.proj(x * x_mask)
+    return x * x_mask
 
 
 class TextEncoder(nn.Module):
@@ -149,18 +90,13 @@ class TextEncoder(nn.Module):
     self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
   def forward(self, x, x_lengths):
-    x = self.emb(x) * math.sqrt(
-      self.hidden_channels)  # [b, t, h]
-    # x = torch.transpose(x, 1, -1)  # [b, h, t]
-    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(1)),
-                             1).to(x.dtype)
-    # x = self.encoder(x * x_mask, x_mask)
+    x = self.emb(x) * math.sqrt(self.hidden_channels)  # [b, t, h]
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(1)), 1).to(x.dtype)
+
     x = torch.einsum('btd,but->bdt', x, x_mask)
     x = self.encoder(x, x_mask)
-    stats = self.proj(x) * x_mask
 
-    m, logs = torch.split(stats, self.out_channels, dim=1)
-    return x, m, logs, x_mask
+    return x, x_mask
 
 
 class ResidualCouplingBlock(nn.Module):
@@ -859,6 +795,104 @@ class YingDecoder(nn.Module):
     return yin_gt_crop, yin_gt_shifted_crop, yin_hat_crop, z_yin_crop, scope_shift
 
 
+class LengthRegulator(nn.Module):
+  """Length Regulator"""
+
+  def __init__(self, hoplen, sr):
+    super(LengthRegulator, self).__init__()
+    self.hoplen = hoplen
+    self.sr = sr
+
+  def LR(self, x, duration, x_lengths):
+    output = list()
+    mel_len = list()
+    x = torch.transpose(x, 1, -1)
+    frame_lengths = list()
+
+    for batch, expand_target in zip(x, duration):
+      expanded = self.expand(batch, expand_target)
+      output.append(expanded)
+      frame_lengths.append(expanded.shape[0])
+
+    max_len = max(frame_lengths)
+    output_padded = torch.FloatTensor(x.size(0), max_len, x.size(2))
+    output_padded.zero_()
+    for i in range(output_padded.size(0)):
+      output_padded[i, :frame_lengths[i], :] = output[i]
+    output_padded = torch.transpose(output_padded, 1, -1)
+
+    return output_padded, torch.LongTensor(frame_lengths)
+
+  def expand(self, batch, predicted):
+    out = list()
+    predicted = predicted.squeeze()
+    for i, vec in enumerate(batch):
+      expand_size = predicted[i].item()
+      vec_expand = vec.expand(max(int(expand_size), 0), -1)
+      out.append(vec_expand)
+
+    out = torch.cat(out, 0)
+    return out
+
+  def forward(self, x, duration, x_lengths):
+
+    output, x_lengths = self.LR(x, duration, x_lengths)
+    return output, x_lengths
+
+
+class FramePriorNet(nn.Module):
+  def __init__(self,
+               n_vocab,
+               out_channels,
+               hidden_channels,
+               filter_channels,
+               n_heads,
+               n_layers,
+               kernel_size,
+               p_dropout):
+    super().__init__()
+
+    self.n_vocab = n_vocab
+    self.out_channels = out_channels
+    self.hidden_channels = hidden_channels
+    self.filter_channels = filter_channels
+    self.n_heads = n_heads
+    self.n_layers = n_layers
+    self.kernel_size = kernel_size
+    self.p_dropout = p_dropout
+
+    self.emb = nn.Embedding(121, hidden_channels)
+
+    self.fft_block = attentions.Encoder(
+      hidden_channels,
+      filter_channels,
+      n_heads,
+      n_layers,
+      kernel_size,
+      p_dropout)
+
+  def forward(self, x_frame, x_mask):
+    x = x_frame
+    x = self.fft_block(x * x_mask, x_mask)
+    x = x.transpose(1, 2)
+    return x
+
+
+class Projection(nn.Module):
+  def __init__(self,
+               hidden_channels,
+               out_channels):
+    super().__init__()
+    self.hidden_channels = hidden_channels
+    self.out_channels = out_channels
+    self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
+
+  def forward(self, x, x_mask):
+    stats = self.proj(x) * x_mask
+    m_p, logs_p = torch.split(stats, self.out_channels, dim=1)
+    return m_p, logs_p
+
+
 class SynthesizerTrn(nn.Module):
   """
   Synthesizer for Training
@@ -868,6 +902,8 @@ class SynthesizerTrn(nn.Module):
       self,
       n_vocab,
       spec_channels,
+      hop_length,
+      sampling_rate,
       segment_size,
       midi_start,
       midi_end,
@@ -964,14 +1000,14 @@ class SynthesizerTrn(nn.Module):
       gin_channels=gin_channels
     )
 
-    self.dp = StochasticDurationPredictor(
-      hidden_channels,
-      192,
-      3,
-      0.5,
-      4,
-      gin_channels=gin_channels
-    )
+    self.duration_predictor = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)
+
+    self.lr = LengthRegulator(hop_length, sampling_rate)
+
+    self.frame_prior_net = FramePriorNet(n_vocab, inter_channels, hidden_channels, filter_channels, n_heads,
+                                         n_layers, kernel_size, p_dropout)
+
+    self.project = Projection(hidden_channels, inter_channels)
 
     self.yin_decoder = YingDecoder(
       yin_scope,
@@ -1011,7 +1047,7 @@ class SynthesizerTrn(nn.Module):
       g = None
     return self.yin_decoder.infer(z_yin, z_mask, g)
 
-  def forward(self, phonemes, phonemes_lengths, spec, spec_lengths, ying, ying_lengths, phndur=None, sid=None, scope_shift=0):
+  def forward(self, phonemes, phonemes_lengths, spec, spec_lengths, ying, ying_lengths, phndur, sid=None, scope_shift=0):
 
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
@@ -1040,34 +1076,24 @@ class SynthesizerTrn(nn.Module):
     z_dec_shifted = torch.cat([z_spec.detach(), z_yin_crop_shifted], dim=1)
     z_dec_ = torch.cat([z_dec, z_dec_shifted], dim=0)
 
-    x, m_p, logs_p, x_mask = self.text_encoder(phonemes, phonemes_lengths)
+    x, x_mask = self.text_encoder(phonemes, phonemes_lengths)
 
-    with torch.no_grad():
-      # negative cross-entropy
-      s_p_sq_r = torch.exp(-2 * logs_p)  # [b, d, t]
-      # [b, 1, t_s]
-      neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - logs_p, [1], keepdim=True)
+    logw_ = torch.log(phndur.detach().float() + 1).unsqueeze(1) * x_mask
+    logw = self.duration_predictor(x, x_mask, g=g)
+    l_loss = torch.sum((logw - logw_) ** 2, [1, 2])
+    x_mask_sum = torch.sum(x_mask)
+    l_length = l_loss / x_mask_sum
 
-      neg_cent2 = torch.einsum('bdt, bds -> bts', -0.5 * (z_p ** 2), s_p_sq_r)
+    # 音素级别转换成帧级
+    x_frame, x_lengths = self.lr(x, phndur, phonemes_lengths)
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.device)
+    x_frame = x_frame.to(x.device)
 
-      neg_cent3 = torch.einsum('bdt, bds -> bts', z_p, (m_p * s_p_sq_r))
-      neg_cent4 = torch.sum(-0.5 * (m_p ** 2) * s_p_sq_r, [1], keepdim=True)  # [b, 1, t_s]
-      neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
+    # 帧先验网络
+    x_frame = self.frame_prior_net(x_frame, x_mask)
+    x_frame = x_frame.transpose(1, 2)
+    m_p, logs_p = self.project(x_frame, x_mask)
 
-      attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-      attn = maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
-
-    w = attn.sum(2)
-
-    l_length = self.dp(x, x_mask, w)
-    l_length = l_length / torch.sum(x_mask)
-
-    # expand prior
-    m_p = torch.einsum('bctn, bdn -> bdt', attn, m_p)
-    logs_p = torch.einsum('bctn, bdn -> bdt', attn, logs_p)
-
-    # z_slice, ids_slice = commons.rand_slice_segments(z_dec, y_lengths, self.segment_size)
-    # o = self.dec(z_slice, g=g)
     z_slice, ids_slice = commons.rand_slice_segments_for_cat(
       z_dec_, torch.cat([spec_lengths, spec_lengths], dim=0),
       self.segment_size)
@@ -1082,44 +1108,42 @@ class SynthesizerTrn(nn.Module):
     yin_hat_crop = self.crop_scope([yin_hat])[0]
     yin_hat_shifted = self.crop_scope_tensor(
       torch.chunk(yin_hat, 2, dim=0)[0], scope_shift)
-    return o, l_length, attn, ids_slice, x_mask, y_mask, o_, \
+
+    return o, l_length, ids_slice, x_mask, y_mask, o_, \
       (z, z_p, m_p, logs_p, m_q, logs_q), \
       (z_dec_), \
       (z_spec, m_spec, logs_spec, spec_mask, z_yin, m_yin, logs_yin, yin_mask), \
       (yin_gt_crop, yin_gt_shifted_crop, yin_dec_crop, yin_hat_crop, scope_shift, yin_hat_shifted)
 
   def infer(self,
-            x,
-            x_lengths,
+            phonemes,
+            phonemes_lengths,
             sid=None,
             noise_scale=1,
             length_scale=1,
             noise_scale_w=1.,
             max_len=None,
             scope_shift=0):  # need to fix #vector scope shift needed
-    x, m_p, logs_p, x_mask = self.text_encoder(x, t, x_lengths)
+    x, x_mask = self.text_encoder(phonemes, phonemes_lengths)
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
     else:
       g = None
 
-    logw = self.dp(
-      x,
-      x_mask,
-      reverse=True,
-      noise_scale=noise_scale_w
-    )
+    logw = self.duration_predictor(x, x_mask, g=g)
+    w = (torch.exp(logw) * x_mask - 1) * length_scale
+    duration = torch.ceil(w)
 
-    w = torch.exp(logw) * x_mask * length_scale
-    w_ceil = torch.ceil(w)
-    y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
-    y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None),
-                             1).to(x_mask.dtype)
-    attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-    attn = commons.generate_path(w_ceil, attn_mask)
+    x_frame, x_lengths = self.lr(x, duration, phonemes_lengths)
+    x_frame = x_frame.to(x.device)
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.device)
 
-    m_p = torch.einsum('bctn, bdn -> bdt', attn, m_p)
-    logs_p = torch.einsum('bctn, bdn -> bdt', attn, logs_p)
+    x_frame = self.frame_prior_net(x_frame, x_mask)
+    x_frame = x_frame.transpose(1, 2)
+    m_p, logs_p = self.project(x_frame, x_mask)
+
+    y_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
+    y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
 
     z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
     z = self.flow(z_p, y_mask, g=g, reverse=True)
@@ -1129,106 +1153,51 @@ class SynthesizerTrn(nn.Module):
     z_yin_crop = self.crop_scope([z_yin], scope_shift)[0]
     z_crop = torch.cat([z_spec, z_yin_crop], dim=1)
     o = self.waveform_decoder((z_crop * y_mask)[:, :, :max_len], g=g)
-    return o, attn, y_mask, (z_crop, z, z_p, m_p, logs_p)
+    return o, y_mask, (z_crop, z, z_p, m_p, logs_p)
 
   def infer_pre_decoder(self,
-                        x,
-                        x_lengths,
+                        phonemes,
+                        phonemes_lengths,
                         sid=None,
                         noise_scale=1.,
                         length_scale=1.,
                         noise_scale_w=1.,
                         max_len=None,
                         scope_shift=0):
-    x, m_p, logs_p, x_mask = self.text_encoder(x, x_lengths)
+
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
     else:
       g = None
 
-    logw = self.dp(
-      x,
-      x_mask,
-      reverse=True,
-      noise_scale=noise_scale_w
-    )
-    w = torch.exp(logw) * x_mask * length_scale
-    w_ceil = torch.ceil(w)
-    y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
-    y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None),
-                             1).to(x_mask.dtype)
-    attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-    attn = commons.generate_path(w_ceil, attn_mask)
+    x, x_mask = self.text_encoder(phonemes, phonemes_lengths)
 
-    m_p = torch.einsum('bctn, bdn -> bdt', attn, m_p)
-    logs_p = torch.einsum('bctn, bdn -> bdt', attn, logs_p)
+    logw = self.duration_predictor(x, x_mask, g=g)
+    w = (torch.exp(logw) * x_mask - 1) * length_scale
+    duration = torch.ceil(w)
+
+    x_frame, x_lengths = self.lr(x, duration, phonemes_lengths)
+    x_frame = x_frame.to(x.device)
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.device)
+
+    x_frame = self.frame_prior_net(x_frame, x_mask)
+    x_frame = x_frame.transpose(1, 2)
+    m_p, logs_p = self.project(x_frame, x_mask)
+
+    y_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
+    y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
 
     z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
     z = self.flow(z_p, y_mask, g=g, reverse=True)
     z_spec, z_yin = torch.split(z,
                                 self.inter_channels - self.yin_channels,
                                 dim=1)
-    z_yin_crop = self.crop_scope([z_yin], scope_shift)[0]
-    z_crop = torch.cat([z_spec, z_yin_crop], dim=1)
-    decoder_inputs = z_crop * y_mask
-    return decoder_inputs, attn, y_mask, (z_crop, z, z_p, m_p, logs_p)
-
-  def infer_pre_lr(
-      self,
-      x,
-      t,
-      x_lengths,
-      sid=None,
-      length_scale=1,
-      noise_scale_w=1.,
-  ):
-    x, m_p, logs_p, x_mask = self.text_encoder(x, t, x_lengths)
-    if self.n_speakers > 0:
-      g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
-    else:
-      g = None
-
-    logw = self.dp(
-      x,
-      x_mask,
-      reverse=True,
-      noise_scale=noise_scale_w
-    )
-
-    w = torch.exp(logw) * x_mask * length_scale
-    w_ceil = torch.ceil(w)
-    return w_ceil, x, m_p, logs_p, x_mask, g
-
-  def infer_lr(self, w_ceil, x, m_p, logs_p, x_mask):
-    y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
-    y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None),
-                             1).to(x_mask.dtype)
-    attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-    attn = commons.generate_path(w_ceil, attn_mask)
-
-    m_p = torch.einsum('bctn, bdn -> bdt', attn, m_p)
-    logs_p = torch.einsum('bctn, bdn -> bdt', attn, logs_p)
-    return m_p, logs_p, y_mask
-
-  def infer_post_lr_pre_decoder(self,
-                                m_p,
-                                logs_p,
-                                g,
-                                y_mask,
-                                noise_scale=1,
-                                scope_shift=0):
-
-    z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
-    z = self.flow(z_p, y_mask, g=g, reverse=True)
-    z_spec, z_yin = torch.split(z,
-                                self.inter_channels - self.yin_channels,
-                                dim=1)
-
     z_yin_crop = self.crop_scope([z_yin], scope_shift)[0]
     z_crop = torch.cat([z_spec, z_yin_crop], dim=1)
     decoder_inputs = z_crop * y_mask
 
     return decoder_inputs, y_mask, (z_crop, z, z_p, m_p, logs_p)
+
 
   def infer_decode_chunk(self, decoder_inputs, sid=None):
     if self.n_speakers > 0:
