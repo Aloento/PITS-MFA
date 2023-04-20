@@ -805,6 +805,7 @@ class LengthRegulator(nn.Module):
   def LR(self, x, duration):
     output = list()
     mel_len = list()
+    x = torch.transpose(x, 1, -1)
 
     for batch, expand_target in zip(x, duration):
       expanded = self.expand(batch, expand_target)
@@ -812,7 +813,7 @@ class LengthRegulator(nn.Module):
       mel_len.append(expanded.shape[0])
 
     output = pad(output)
-
+    output = torch.transpose(output, 1, -1)
     return output, torch.LongTensor(mel_len).cuda()
 
   def expand(self, batch, predicted):
