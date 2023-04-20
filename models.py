@@ -27,8 +27,6 @@ class StochasticDurationPredictor(nn.Module):
                n_flows=4,
                gin_channels=0):
     super().__init__()
-    # it needs to be removed from future version.
-    filter_channels = in_channels
     self.in_channels = in_channels
     self.filter_channels = filter_channels
     self.kernel_size = kernel_size
@@ -124,55 +122,6 @@ class StochasticDurationPredictor(nn.Module):
       z0, z1 = torch.split(z, [1, 1], 1)
       logw = z0
       return logw
-
-
-class DurationPredictor(nn.Module):
-
-  def __init__(self,
-               in_channels,
-               filter_channels,
-               kernel_size,
-               p_dropout,
-               gin_channels=0):
-    super().__init__()
-
-    self.in_channels = in_channels
-    self.filter_channels = filter_channels
-    self.kernel_size = kernel_size
-    self.p_dropout = p_dropout
-    self.gin_channels = gin_channels
-
-    self.drop = nn.Dropout(p_dropout)
-    self.conv_1 = nn.Conv1d(in_channels,
-                            filter_channels,
-                            kernel_size,
-                            padding=kernel_size // 2)
-    self.norm_1 = modules.LayerNorm(filter_channels)
-    self.conv_2 = nn.Conv1d(filter_channels,
-                            filter_channels,
-                            kernel_size,
-                            padding=kernel_size // 2)
-    self.norm_2 = modules.LayerNorm(filter_channels)
-    self.proj = nn.Conv1d(filter_channels, 1, 1)
-
-    if gin_channels != 0:
-      self.cond = nn.Conv1d(gin_channels, in_channels, 1)
-
-  def forward(self, x, x_mask, g=None):
-    x = torch.detach(x)
-    if g is not None:
-      g = torch.detach(g)
-      x = x + self.cond(g)
-    x = self.conv_1(x * x_mask)
-    x = torch.relu(x)
-    x = self.norm_1(x)
-    x = self.drop(x)
-    x = self.conv_2(x * x_mask)
-    x = torch.relu(x)
-    x = self.norm_2(x)
-    x = self.drop(x)
-    x = self.proj(x * x_mask)
-    return x * x_mask
 
 
 class TextEncoder(nn.Module):
@@ -1015,7 +964,14 @@ class SynthesizerTrn(nn.Module):
       gin_channels=gin_channels
     )
 
-    self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)
+    self.dp = StochasticDurationPredictor(
+      hidden_channels,
+      192,
+      3,
+      0.5,
+      4,
+      gin_channels=gin_channels
+    )
 
     self.yin_decoder = YingDecoder(
       yin_scope,
@@ -1101,11 +1057,10 @@ class SynthesizerTrn(nn.Module):
       attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
       attn = maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
 
-    logw_ = torch.log(phndur.detach().float() + 1).unsqueeze(1) * x_mask
-    logw = self.dp(x, x_mask, g=g)
-    l_loss = torch.sum((logw - logw_) ** 2, [1, 2])
-    x_mask_sum = torch.sum(x_mask)
-    l_length = l_loss / x_mask_sum
+    w = attn.sum(2)
+
+    l_length = self.dp(x, x_mask, w)
+    l_length = l_length / torch.sum(x_mask)
 
     # expand prior
     m_p = torch.einsum('bctn, bdn -> bdt', attn, m_p)
@@ -1148,7 +1103,12 @@ class SynthesizerTrn(nn.Module):
     else:
       g = None
 
-    logw = self.dp(x, x_mask, g=g)
+    logw = self.dp(
+      x,
+      x_mask,
+      reverse=True,
+      noise_scale=noise_scale_w
+    )
 
     w = torch.exp(logw) * x_mask * length_scale
     w_ceil = torch.ceil(w)
@@ -1186,7 +1146,12 @@ class SynthesizerTrn(nn.Module):
     else:
       g = None
 
-    logw = self.dp(x, x_mask, g=g)
+    logw = self.dp(
+      x,
+      x_mask,
+      reverse=True,
+      noise_scale=noise_scale_w
+    )
     w = torch.exp(logw) * x_mask * length_scale
     w_ceil = torch.ceil(w)
     y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
@@ -1223,7 +1188,13 @@ class SynthesizerTrn(nn.Module):
     else:
       g = None
 
-    logw = self.dp(x, x_mask, g=g)
+    logw = self.dp(
+      x,
+      x_mask,
+      reverse=True,
+      noise_scale=noise_scale_w
+    )
+
     w = torch.exp(logw) * x_mask * length_scale
     w_ceil = torch.ceil(w)
     return w_ceil, x, m_p, logs_p, x_mask, g
