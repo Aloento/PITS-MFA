@@ -1142,18 +1142,18 @@ class SynthesizerTrn(nn.Module):
     x_frame = x_frame.transpose(1, 2)
     m_p, logs_p = self.project(x_frame, x_mask)
 
-    y_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
-    y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
+    # y_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
+    # y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
 
     z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
-    z = self.flow(z_p, y_mask, g=g, reverse=True)
+    z = self.flow(z_p, x_mask, g=g, reverse=True)
     z_spec, z_yin = torch.split(z,
                                 self.inter_channels - self.yin_channels,
                                 dim=1)
     z_yin_crop = self.crop_scope([z_yin], scope_shift)[0]
     z_crop = torch.cat([z_spec, z_yin_crop], dim=1)
-    o = self.waveform_decoder((z_crop * y_mask)[:, :, :max_len], g=g)
-    return o, y_mask, (z_crop, z, z_p, m_p, logs_p)
+    o = self.waveform_decoder((z_crop * x_mask)[:, :, :max_len], g=g)
+    return o, x_mask, (z_crop, z, z_p, m_p, logs_p)
 
   def infer_pre_decoder(self,
                         phonemes,
@@ -1184,19 +1184,19 @@ class SynthesizerTrn(nn.Module):
     x_frame = x_frame.transpose(1, 2)
     m_p, logs_p = self.project(x_frame, x_mask)
 
-    y_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
-    y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
+    # y_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
+    # y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
 
     z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
-    z = self.flow(z_p, y_mask, g=g, reverse=True)
+    z = self.flow(z_p, x_mask, g=g, reverse=True)
     z_spec, z_yin = torch.split(z,
                                 self.inter_channels - self.yin_channels,
                                 dim=1)
     z_yin_crop = self.crop_scope([z_yin], scope_shift)[0]
     z_crop = torch.cat([z_spec, z_yin_crop], dim=1)
-    decoder_inputs = z_crop * y_mask
+    decoder_inputs = z_crop * x_mask
 
-    return decoder_inputs, y_mask, (z_crop, z, z_p, m_p, logs_p)
+    return decoder_inputs, x_mask, (z_crop, z, z_p, m_p, logs_p)
 
 
   def infer_decode_chunk(self, decoder_inputs, sid=None):
