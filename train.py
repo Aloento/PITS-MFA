@@ -85,8 +85,6 @@ def run(n_gpus, hps, args):
 
   net_g = SynthesizerTrn(len(symbols),
                          hps.data.filter_length // 2 + 1,
-                         hps.data.hop_length,
-                         hps.data.sampling_rate,
                          hps.train.segment_size // hps.data.hop_length,
                          midi_start=hps.data.midi_start,
                          midi_end=hps.data.midi_end,
