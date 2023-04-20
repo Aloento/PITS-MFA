@@ -853,8 +853,6 @@ class FramePriorNet(nn.Module):
     self.kernel_size = kernel_size
     self.p_dropout = p_dropout
 
-    self.emb = nn.Embedding(121, hidden_channels)
-
     self.fft_block = attentions.Encoder(
       hidden_channels,
       filter_channels,
