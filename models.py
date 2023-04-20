@@ -818,6 +818,7 @@ class LengthRegulator(nn.Module):
 
   def expand(self, batch, predicted):
     out = list()
+    predicted = predicted.squeeze()
 
     for i, vec in enumerate(batch):
       expand_size = predicted[i].item()
