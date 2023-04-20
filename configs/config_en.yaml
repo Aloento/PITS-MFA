@@ -1,5 +1,5 @@
 train:
-  log_interval: 50   # step unit
+  log_interval: 10   # step unit
   eval_interval: 400  # step unit
   save_interval: 5  # epoch unit: 50 for baseline / 500 for fine-tuning
   seed: 1234
