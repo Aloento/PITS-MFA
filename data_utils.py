@@ -81,26 +81,23 @@ class TextAudioLoader(torch.utils.data.Dataset):
       wav = wav[:, :sumdur * self.hop_length]
     elif spec.shape[-1] < sumdur:
       spec_pad = torch.zeros([spec.shape[0], sumdur])
-      wav_pad = torch.zeros([1, sumdur * self.hop_length])
       spec_pad[:, :spec.shape[-1]] = spec
-      wav_pad[:, :wav.shape[-1]] = wav
       spec = spec_pad
+      wav_pad = torch.zeros([1, sumdur * self.hop_length])
+      wav_pad[:, :wav.shape[-1]] = wav
       wav = wav_pad
 
     if ying.shape[-1] > sumdur:
       ying = ying[:, :sumdur]
-      wav = wav[:, :sumdur * self.hop_length]
     elif ying.shape[-1] < sumdur:
       ying_pad = torch.zeros([ying.shape[0], sumdur])
-      wav_pad = torch.zeros([1, sumdur * self.hop_length])
       ying_pad[:, :ying.shape[-1]] = ying
-      wav_pad[:, :wav.shape[-1]] = wav
       ying = ying_pad
-      wav = wav_pad
 
-    assert phonemes.shape == phn_dur.shape, wav_path
-    assert sumdur == wav.shape[-1] // self.hop_length
-    assert spec.shape[1] == ying.shape[1], (spec.shape[1], ying.shape[1])
+    assert phonemes.shape == phn_dur.shape, (phonemes.shape, phn_dur.shape, wav_path)
+
+    assert sumdur == wav.shape[-1] // self.hop_length == spec.shape[-1] == ying.shape[-1], \
+           (sumdur, wav.shape[-1] // self.hop_length, spec.shape[-1], ying.shape[-1])
 
     return phonemes, spec, ying, wav, phn_dur
 
