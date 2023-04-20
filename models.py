@@ -864,9 +864,7 @@ class FramePriorNet(nn.Module):
       p_dropout)
 
   def forward(self, x_frame, x_mask):
-    x = x_frame
-    x = self.fft_block(x * x_mask, x_mask)
-    x = x.transpose(1, 2)
+    x = self.fft_block(x_frame, x_mask)
     return x
 
 
@@ -1080,7 +1078,6 @@ class SynthesizerTrn(nn.Module):
 
     # 帧先验网络
     x_frame = self.frame_prior_net(x_frame, x_mask)
-    x_frame = x_frame.transpose(1, 2)
     m_p, logs_p = self.project(x_frame, x_mask)
 
     z_slice, ids_slice = commons.rand_slice_segments_for_cat(
@@ -1128,7 +1125,6 @@ class SynthesizerTrn(nn.Module):
     x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.dtype).to(x.device)
 
     x_frame = self.frame_prior_net(x_frame, x_mask)
-    x_frame = x_frame.transpose(1, 2)
     m_p, logs_p = self.project(x_frame, x_mask)
 
     z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
@@ -1167,7 +1163,6 @@ class SynthesizerTrn(nn.Module):
     x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x_frame.size(2)), 1).to(x.dtype).to(x.device)
 
     x_frame = self.frame_prior_net(x_frame, x_mask)
-    x_frame = x_frame.transpose(1, 2)
     m_p, logs_p = self.project(x_frame, x_mask)
 
     z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
