@@ -1142,8 +1142,6 @@ class SynthesizerTrn(nn.Module):
     x_frame = x_frame.transpose(1, 2)
     m_p, logs_p = self.project(x_frame, x_mask)
 
-    # y_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
-
     z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
     z = self.flow(z_p, x_mask, g=g, reverse=True)
     z_spec, z_yin = torch.split(z,
@@ -1183,8 +1181,6 @@ class SynthesizerTrn(nn.Module):
     x_frame = self.frame_prior_net(x_frame, x_mask)
     x_frame = x_frame.transpose(1, 2)
     m_p, logs_p = self.project(x_frame, x_mask)
-
-    # y_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
 
     z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
     z = self.flow(z_p, x_mask, g=g, reverse=True)
