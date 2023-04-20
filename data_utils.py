@@ -246,11 +246,8 @@ def create_spec(audiopaths_sid_text, hparams):
       spec = torch.squeeze(spec, 0)
       torch.save(spec, specpath)
 
-def pad(input_ele, mel_max_length=None):
-  if mel_max_length:
-    max_len = mel_max_length
-  else:
-    max_len = max([input_ele[i].size(0) for i in range(len(input_ele))])
+def pad(input_ele):
+  max_len = max([input_ele[i].size(0) for i in range(len(input_ele))])
 
   out_list = list()
   for i, batch in enumerate(input_ele):
@@ -264,4 +261,5 @@ def pad(input_ele, mel_max_length=None):
       )
     out_list.append(one_batch_padded)
   out_padded = torch.stack(out_list)
+
   return out_padded
