@@ -23,8 +23,6 @@ class GradioApp:
     self.device = "cpu"
     self.net_g = SynthesizerTrn(symbol_len(self.hps.data.languages),
                                 self.hps.data.filter_length // 2 + 1,
-                                self.hps.data.hop_length,
-                                self.hps.data.sampling_rate,
                                 self.hps.train.segment_size // self.hps.data.hop_length,
                                 midi_start=-5,
                                 midi_end=75,

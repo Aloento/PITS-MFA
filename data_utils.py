@@ -10,6 +10,7 @@ from analysis import Pitch
 from mel_processing import spectrogram_torch
 from text import cleaned_text_to_sequence
 from utils import load_wav_to_torch, load_filepaths_and_text
+import torch.nn.functional as F
 
 
 class TextAudioLoader(torch.utils.data.Dataset):
@@ -244,3 +245,23 @@ def create_spec(audiopaths_sid_text, hparams):
                                center=False)
       spec = torch.squeeze(spec, 0)
       torch.save(spec, specpath)
+
+def pad(input_ele, mel_max_length=None):
+  if mel_max_length:
+    max_len = mel_max_length
+  else:
+    max_len = max([input_ele[i].size(0) for i in range(len(input_ele))])
+
+  out_list = list()
+  for i, batch in enumerate(input_ele):
+    if len(batch.shape) == 1:
+      one_batch_padded = F.pad(
+        batch, (0, max_len - batch.size(0)), "constant", 0.0
+      )
+    elif len(batch.shape) == 2:
+      one_batch_padded = F.pad(
+        batch, (0, 0, 0, max_len - batch.size(0)), "constant", 0.0
+      )
+    out_list.append(one_batch_padded)
+  out_padded = torch.stack(out_list)
+  return out_padded

@@ -13,6 +13,7 @@ import commons
 import modules
 from analysis import Pitch
 from commons import init_weights, get_padding
+from data_utils import pad
 from pqmf import PQMF
 
 
@@ -798,46 +799,37 @@ class YingDecoder(nn.Module):
 class LengthRegulator(nn.Module):
   """Length Regulator"""
 
-  def __init__(self, hoplen, sr):
+  def __init__(self):
     super(LengthRegulator, self).__init__()
-    self.hoplen = hoplen
-    self.sr = sr
 
-  def LR(self, x, duration, x_lengths):
+  def LR(self, x, duration, max_len):
     output = list()
     mel_len = list()
-    x = torch.transpose(x, 1, -1)
-    frame_lengths = list()
-
     for batch, expand_target in zip(x, duration):
       expanded = self.expand(batch, expand_target)
       output.append(expanded)
-      frame_lengths.append(expanded.shape[0])
+      mel_len.append(expanded.shape[0])
 
-    max_len = max(frame_lengths)
-    output_padded = torch.FloatTensor(x.size(0), max_len, x.size(2))
-    output_padded.zero_()
-    for i in range(output_padded.size(0)):
-      output_padded[i, :frame_lengths[i], :] = output[i]
-    output_padded = torch.transpose(output_padded, 1, -1)
+    if max_len is not None:
+      output = pad(output, max_len)
+    else:
+      output = pad(output)
 
-    return output_padded, torch.LongTensor(frame_lengths)
+    return output, torch.LongTensor(mel_len).cuda()
 
   def expand(self, batch, predicted):
     out = list()
-    predicted = predicted.squeeze()
+
     for i, vec in enumerate(batch):
       expand_size = predicted[i].item()
-      vec_expand = vec.expand(max(int(expand_size), 0), -1)
-      out.append(vec_expand)
-
+      out.append(vec.expand(max(int(expand_size), 0), -1))
     out = torch.cat(out, 0)
+
     return out
 
-  def forward(self, x, duration, x_lengths):
-
-    output, x_lengths = self.LR(x, duration, x_lengths)
-    return output, x_lengths
+  def forward(self, x, duration, max_len):
+    output, mel_len = self.LR(x, duration, max_len)
+    return output, mel_len
 
 
 class FramePriorNet(nn.Module):
@@ -902,8 +894,6 @@ class SynthesizerTrn(nn.Module):
       self,
       n_vocab,
       spec_channels,
-      hop_length,
-      sampling_rate,
       segment_size,
       midi_start,
       midi_end,
@@ -1002,7 +992,7 @@ class SynthesizerTrn(nn.Module):
 
     self.duration_predictor = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)
 
-    self.lr = LengthRegulator(hop_length, sampling_rate)
+    self.lr = LengthRegulator()
 
     self.frame_prior_net = FramePriorNet(n_vocab, inter_channels, hidden_channels, filter_channels, n_heads,
                                          n_layers, kernel_size, p_dropout)
