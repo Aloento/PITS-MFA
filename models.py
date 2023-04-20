@@ -1011,7 +1011,7 @@ class SynthesizerTrn(nn.Module):
       g = None
     return self.yin_decoder.infer(z_yin, z_mask, g)
 
-  def forward(self, phonemes, phonemes_lengths, spec, spec_lengths, ying, ying_lengths, phndur, sid=None, scope_shift=0):
+  def forward(self, phonemes, phonemes_lengths, spec, spec_lengths, ying, ying_lengths, phndur=None, sid=None, scope_shift=0):
 
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
