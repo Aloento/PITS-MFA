@@ -265,7 +265,7 @@ def train_and_evaluate(epoch, hps, nets, optims, schedulers, scaler,
 
     inner_bar.update(1)
     inner_bar.set_description(
-      "Epoch {} | g {: .04f} d {: .04f}| {: d}".format(
+      "Epoch {} | g {: .04f} d {: .04f}| {: d} step".format(
         epoch, loss_gen_all, loss_disc_all, global_step))
     if global_step % hps.train.log_interval == 0:
       lr = optim_g.param_groups[0]['lr']
