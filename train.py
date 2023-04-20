@@ -370,8 +370,7 @@ def evaluate(hps, current_step, epoch, generator, eval_loader, writer):
         wav = wav[:n_sample]
         wav_lengths = wav_lengths[:n_sample]
 
-        decoder_inputs, _, mask, (z_crop, z, *_) \
-          = generator.infer_pre_decoder(phonemes, phonemes_lengths, max_len=2000)
+        decoder_inputs, mask, (z_crop, z, *_) = generator.infer_pre_decoder(phonemes, phonemes_lengths, max_len=2000)
         y_hat = generator.infer_decode_chunk(decoder_inputs)
 
         # scope-shifted
