@@ -78,6 +78,7 @@ def run(n_gpus, hps, args):
     train_dataset,
     num_workers=8,
     shuffle=True,
+    batch_size=hps.train.batch_size,
     collate_fn=collate_fn,
     persistent_workers=True
   )
