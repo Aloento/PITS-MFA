@@ -115,8 +115,8 @@ def run(n_gpus, hps, args):
   elif args.force_resume:
     _, _, _, epoch_save, _ = utils.load_checkpoint_diffsize(
       args.force_resume, 0, net_g, net_d)
-    epoch_str = epoch_save + 1
-    global_step = epoch_save * len(train_loader) + 1
+    epoch_str = 1
+    global_step = 0
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(
       optim_g, gamma=hps.train.lr_decay, last_epoch=-1)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(
